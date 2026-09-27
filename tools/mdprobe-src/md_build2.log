@@ -1,0 +1,9 @@
+C:\Users\txgcs\WorkBuddy\zjb\tools\dotnet9\sdk\9.0.318\Sdks\Microsoft.NET.Sdk\targets\Microsoft.NET.Sdk.FrameworkReferenceResolution.targets(425,5): error NETSDK1127: 未安装目标包 Microsoft.NETCore.App。请还原并重试。 [C:\Users\txgcs\WorkBuddy\zjb\tools\mdprobe\mdprobe.csproj]
+
+生成失败。
+
+C:\Users\txgcs\WorkBuddy\zjb\tools\dotnet9\sdk\9.0.318\Sdks\Microsoft.NET.Sdk\targets\Microsoft.NET.Sdk.FrameworkReferenceResolution.targets(425,5): error NETSDK1127: 未安装目标包 Microsoft.NETCore.App。请还原并重试。 [C:\Users\txgcs\WorkBuddy\zjb\tools\mdprobe\mdprobe.csproj]
+    0 个警告
+    1 个错误
+
+已用时间 00:00:00.70

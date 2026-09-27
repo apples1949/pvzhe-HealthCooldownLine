@@ -1,0 +1,114 @@
+TYPE TowerDefenseCraterDayGround : TowerDefenseCrater
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0
+TYPE TowerDefenseCraterG : TowerDefenseCrater
+    F  timerComponent : CharacterTimerComponent
+    F  over : Boolean
+    M  _Ready/0
+    M  _ExitTree/0
+    M  Timeout/1
+    M  BatchUpdate/1
+    M  DestroySet/0
+    M  GetGodotMethodList/0
+    M  InvokeGodotClassMethod/3
+    M  HasGodotClassMethod/1
+    M  SetGodotClassPropertyValue/2
+    M  GetGodotClassPropertyValue/2
+    M  GetGodotPropertyList/0
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0
+TYPE TowerDefenseCraterImp : TowerDefenseCrater
+    M  DieDown/0
+    M  GetGodotMethodList/0
+    M  InvokeGodotClassMethod/3
+    M  HasGodotClassMethod/1
+    M  GetGodotClassPropertyValue/2
+    M  GetGodotPropertyList/0
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0
+    P  HasPendingRevival
+TYPE TowerDefenseCraterK : TowerDefenseCrater
+    M  DieDown/0
+    M  GetGodotMethodList/0
+    M  InvokeGodotClassMethod/3
+    M  HasGodotClassMethod/1
+    M  GetGodotClassPropertyValue/2
+    M  GetGodotPropertyList/0
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0
+    P  HasPendingRevival
+TYPE TowerDefenseCraterLava : TowerDefenseCrater
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0
+TYPE TowerDefenseCraterNG : TowerDefenseCrater
+    M  DieDown/0
+    M  GetGodotMethodList/0
+    M  InvokeGodotClassMethod/3
+    M  HasGodotClassMethod/1
+    M  GetGodotClassPropertyValue/2
+    M  GetGodotPropertyList/0
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0
+    P  HasPendingRevival
+TYPE TowerDefenseCraterN : TowerDefenseCrater
+    M  DieDown/0
+    M  GetGodotMethodList/0
+    M  InvokeGodotClassMethod/3
+    M  HasGodotClassMethod/1
+    M  GetGodotClassPropertyValue/2
+    M  GetGodotPropertyList/0
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0
+    P  HasPendingRevival
+TYPE TowerDefenseCrater : TowerDefenseCharacter
+    F  weatheringComponent : WeatheringComponent
+    F  environmentAnimeComponent : EnvironmentAnimeComponent
+    F  dieDownTimer : Double
+    F  stage : Int32
+    F  stageMax : Int32
+    F  timer : Double
+    F  weatheringDisabled : Boolean
+    F  spawnHypnoses : Boolean
+    F  _halfCrater : Boolean
+    F  _isWater : Boolean
+    F  _isNight : Boolean
+    M  _Ready/0
+    M  EnsureSpriteBound/0
+    M  IdleProcessing/1
+    M  SetFliter/1
+    M  ApplyHalfCraterStage/0
+    M  SetFrame/0
+    M  DieDown/0
+    M  SpawnWeatheredZombie/1
+    M  ExportVariantSave/0
+    M  ImportVariantSave/1
+    M  GetGodotMethodList/0
+    M  InvokeGodotClassMethod/3
+    M  HasGodotClassMethod/1
+    M  SetGodotClassPropertyValue/2
+    M  GetGodotClassPropertyValue/2
+    M  GetGodotPropertyList/0
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0
+    P  HasPendingRevival
+    P  RevivalCamp
+    P  halfCrater
+    P  isWater
+    P  isNight
+TYPE TowerDefenseCraterConfig : TowerDefenseCharacterConfig
+    F  dieDownTime : Double
+    F  dieDownFliters : Array`1<String>
+    M  SetGodotClassPropertyValue/2
+    M  GetGodotClassPropertyValue/2
+    M  GetGodotPropertyList/0
+    M  SaveGodotObjectData/1
+    M  RestoreGodotObjectData/1
+    M  .ctor/0

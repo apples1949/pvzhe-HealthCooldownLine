@@ -1,0 +1,12 @@
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(385,15): warning CS0169: 从不使用字段“HealthCooldownLineEntry._initFaultReported” [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+
+已成功生成。
+
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(385,15): warning CS0169: 从不使用字段“HealthCooldownLineEntry._initFaultReported” [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+    1 个警告
+    0 个错误
+
+已用时间 00:00:11.15
+build=0
+-rwxr-xr-x 1 txgcs 197121 9728 Sep 26 11:42 bin/Release/ModAssembly.dll
+FINISHED

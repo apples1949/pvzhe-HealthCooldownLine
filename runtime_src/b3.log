@@ -1,0 +1,12 @@
+  正在确定要还原的项目…
+  已还原 C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj (用时 95 毫秒)。
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(43,47): error CS0738: “HealthCooldownLineEntry”不实现接口成员“IXWModRuntimeEntry.Initialize(XWModRuntimeContext)”。“HealthCooldownLineEntry.Initialize(XWModRuntimeContext)”无法实现“IXWModRuntimeEntry.Initialize(XWModRuntimeContext)”，因为它没有“void”的匹配返回类型。 [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+
+生成失败。
+
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(43,47): error CS0738: “HealthCooldownLineEntry”不实现接口成员“IXWModRuntimeEntry.Initialize(XWModRuntimeContext)”。“HealthCooldownLineEntry.Initialize(XWModRuntimeContext)”无法实现“IXWModRuntimeEntry.Initialize(XWModRuntimeContext)”，因为它没有“void”的匹配返回类型。 [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+    0 个警告
+    1 个错误
+
+已用时间 00:00:06.83
+exit=1

@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    血量显示新增「角色计时器倒计时」一行 —— 托管运行时程序集。
+
+    刻意不用 Godot.NET.Sdk（要联网还原包 + 源码生成器）；本入口只用
+    Godot 普通 API（Engine / SceneTree / Node / Label）和游戏程序集的公开成员。
+
+    TargetFramework 用 net8.0：本机 SDK 是 8.0，而 .NET 9 运行时向后兼容 net8.0 程序集。
+    （游戏自身是 net9.0，见 PlantsVsZombies.runtimeconfig.json）
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>ModAssembly</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <!--
+      游戏程序集是 net9.0，本工程 target net8.0（本机 SDK 版本）⇒ 引用其传递依赖时
+      会报一屏 MSB3277「版本冲突」警告。它们不影响产物，但会让构建日志膨胀、
+      构建耗时明显变长（实测会拖到被超时打断）。这里压掉。
+    -->
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+    <GodotRefDir Condition="'$(GodotRefDir)' == ''">C://Users//txgcs//Downloads//植物大战僵尸杂交重制版//data_PlantsVsZombies_windows_x86_64</GodotRefDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="check_*.cs" />
+    <None Include="check_*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Private=false：26MB 的游戏程序集不进输出，运行时由引擎自己那份解析 -->
+    <Reference Include="GodotSharp">
+      <HintPath>$(GodotRefDir)\GodotSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="PlantsVsZombies">
+      <HintPath>$(GodotRefDir)\PlantsVsZombies.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
