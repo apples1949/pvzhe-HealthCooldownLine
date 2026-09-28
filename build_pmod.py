@@ -15,7 +15,7 @@ import shutil
 
 BASE = r"C:/Users/txgcs/WorkBuddy/zjb/mod/HealthCooldownLine"
 RUNTIME = os.path.join(BASE, "Runtime")
-BINSRC = os.path.join(BASE, "runtime_src", "bin", "Release", "ModAssembly.dll")
+BINSRC = os.path.join(BASE, "runtime_src", "bin", "Release", "JTYHealthCooldownLine.dll")
 OUT_DIR = r"C:/Users/txgcs/WorkBuddy/zjb/mod/dist"
 OUT = os.path.join(OUT_DIR, "HealthCooldownLine.pmod")
 
@@ -44,7 +44,7 @@ def main():
             shutil.copyfile(BINSRC, runtime_dll)
             print("       已更新 Runtime/ModAssembly.dll ->", md5(runtime_dll))
     else:
-        print("[护栏0·提示] 未找到 runtime_src/bin/Release/ModAssembly.dll，"
+        print("[护栏0·提示] 未找到 runtime_src/bin/Release/JTYHealthCooldownLine.dll，"
               "直接使用现有 Runtime/ModAssembly.dll（无法核对新旧）")
 
     man = json.load(open(os.path.join(BASE, "mod.json"), encoding="utf-8"))

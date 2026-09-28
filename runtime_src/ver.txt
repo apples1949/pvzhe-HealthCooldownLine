@@ -1,0 +1,2 @@
+﻿VER_OUT=[9.0.318]
+SDKS=[9.0.318 [C:\Users\txgcs\WorkBuddy\zjb\tools\dotnet9\sdk]]

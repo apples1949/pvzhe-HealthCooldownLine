@@ -173,6 +173,65 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	}
 
 	/// <summary>
+	/// ★ v1.15.8：**Godot Timer 型"消失倒计时"**——某些限时物件（如蜘蛛网
+	/// `TowerDefenseBungiTargetSP`，源码：`public double lifetime = 15.0;` + 一个
+	/// `Timer{WaitTime=lifetime}` 子节点，超时即自己消失）**不走 `CharacterTimerComponent`**，
+	/// 所以原来的计时器分支读不到。这里直接找角色节点下的 **Godot `Timer` 子节点**，
+	/// 读其 **`TimeLeft`（剩余秒）/`WaitTime`（总时长）**。
+	/// 归"障碍物消失"开关（CatOn(1)）；仅对"障碍物类"生效，避免误报。
+	/// </summary>
+	private void TryCollectGodotTimerLine(TowerDefenseCharacter character,
+		System.Collections.Generic.List<(string Text, Color Color)> lines)
+	{
+		try
+		{
+			// ★ v1.16.0：Timer 归属与标签的精细处理（用户要求）：
+			//   ① **僵尸身上的 Timer 不显示**——实测那类是"外来特效计时"（大蒜鸟 GarlicBird 把
+			//      5s 特效 Timer `AddChild` 到僵尸身上），不是僵尸自己的机制；全库无僵尸类自建 Timer，
+			//      所以"僵尸节点上的 Timer"一律跳过是安全的；
+			//   ② **南瓜灯 PumpLantern** 的 Timer 语义是"每 50 秒生成一次护盾"⇒ 标签用 **"护盾"**；
+			//      其余角色用中性"计时"（蜘蛛网=存在时长等）。
+			string cn16 = SafeCharName(character) ?? "";
+			if (cn16.IndexOf("Zombie", StringComparison.OrdinalIgnoreCase) >= 0)
+			{
+				return;   // 僵尸身上的 Timer 不显示
+			}
+			Godot.Timer tmr = null;
+			int n = character.GetChildCount();
+			for (int i = 0; i < n; i++)
+			{
+				Node c = character.GetChild(i, false);
+				if (c is Godot.Timer t2 && GodotObject.IsInstanceValid(t2))
+				{
+					tmr = t2;
+					break;
+				}
+			}
+			if (tmr == null)
+			{
+				return;
+			}
+			double left = tmr.TimeLeft;
+			double wait = tmr.WaitTime;
+			if (_obstacleHpReported.Add("TMR|" + cn16 + "|" + wait.ToString("0.###")))
+			{
+				Info("计时节点[" + cn16 + "]：Timer WaitTime="
+					+ wait.ToString("0.###") + " TimeLeft=" + left.ToString("0.###"));
+			}
+			if (CatOn(1) && left > 0.0 && lines.Count < MaxTotalLines)
+			{
+				string tag16 = "计时";
+				if (cn16.IndexOf("PumpLantern", StringComparison.OrdinalIgnoreCase) >= 0)
+				{
+					tag16 = "护盾";
+				}
+				lines.Add((tag16 + " " + left.ToString("0.0") + "s", BusyColor));
+			}
+		}
+		catch { }
+	}
+
+	/// <summary>
 	/// 障碍物血量（v1.13.0）：读游戏血条组件 `ShowHealthComponent._bodyDisplayText`
 	/// （游戏当前显示的本体血量文本，如 "1500/1500"）→ 显示"血量 X"。
 	/// </summary>
@@ -192,11 +251,105 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			{
 				return;
 			}
+			// ★ v1.16.1：**护盾类障碍物不再显示血量**——游戏原生血条已经显示它们
+			//   （用户要求"护盾障碍物就不用显示血量了，游戏本来就有显示"）。
+			//   名单（类名片段）：`Sheild`/`Shield`（`TargetSheild`、`Item/Sheild`）。
+			// ★ v1.16.2：**符石类（RuneStone）从本名单移除**——用户明确"符石类要显示血量"，
+			//   符石不是护盾，游戏也不会给它画原生血条，必须照常输出 `血量 X/Y`。
+			try
+			{
+				string tn17 = character.GetType().Name;
+				if (tn17.IndexOf("Sheild", StringComparison.OrdinalIgnoreCase) >= 0
+					|| tn17.IndexOf("Shield", StringComparison.OrdinalIgnoreCase) >= 0)
+				{
+					if (_obstacleHpReported.Add("SHLD|" + (charName ?? "?")))
+					{
+						Info("血量跳过[" + (charName ?? "?") + "]：护盾类（游戏自带血条，不重复显示）");
+					}
+					return;
+				}
+			}
+			catch { }
 			ComponentManager cmH = character.componentManager;
 			if (cmH == null)
 			{
 				return;
 			}
+			// ★★ v1.14.3：**能挡子弹 = 挂了 BlockComponent**（由新解包的 C# 源码**定案**）：
+			//   `Script/Component/TowerDefense/Character/BlockComponent/BlockComponent.cs`：
+			//   `public sealed class BlockComponent : CharacterComponentRuntime,
+			//    IProjectileZoneBinding, IProjectileZone, ICatapultProjectileBlockZone`
+			//   —— 它才是"子弹是否被挡住"的权威实现（字段：`blockType`/`extendGrid`/`checkShape`/
+			//   `checkLadder`/`reboundProjectile`/`WorldRect`/`RowSpan`）。
+			//   ⇒ 没有 BlockComponent 的障碍物**不挡子弹** → 不显示血量。
+			//   （v1.14.2 用的"命中盒字段"判据已被替换——那是间接信号，这是权威判据。）
+			// ★★ v1.15.5："能被攻击"判据升级为**目标系统口径**（源码 `TargetSystem.cs` 693 行——
+			//   投射物选目标的完整条件）：
+			//     instance.canBeCollection && !instance.invincible && !instance.hologram
+			//     && targetRegistrationComponent.canProjectileCheck
+			//   叠加原有的"命中盒有效"（`_hitBoxAvailable && _hitBoxDefaultEnabled` 且未抑制）。
+			//   实测背景：**普通墓碑**（无命中盒 + 抑制=4）已拦下；**科技地砖 FloorQX**
+			//   （hitBoxAvail=True）仍显示 ⇒ 需要 instance 层标志（无敌/幻象/可选中）才能覆盖它。
+			//   安全兜底：字段取不到一律**放行**。诊断打印**全部原始值**，便于按实测校准。
+			try
+			{
+				FieldInfo fa16 = FindFieldAlong(character.GetType(), "_hitBoxAvailable");
+				FieldInfo fe16 = FindFieldAlong(character.GetType(), "_hitBoxDefaultEnabled");
+				FieldInfo fs16 = FindFieldAlong(character.GetType(), "_hitBoxSuppression");
+				bool hbOk = true;
+				string dbgHb = "";
+				if (fa16 != null && fe16 != null)
+				{
+					bool a16 = (fa16.GetValue(character) is bool b16a) && b16a;
+					bool e16 = (fe16.GetValue(character) is bool b16e) && b16e;
+					int s16 = (fs16 != null && fs16.GetValue(character) != null)
+						? Convert.ToInt32(fs16.GetValue(character)) : 0;
+					hbOk = a16 && e16 && s16 <= 0;
+					dbgHb = " hitBox=" + a16 + "/" + e16 + "/" + s16;
+				}
+				// instance 层（血量真身同一路径：HurtComponent._damageInstance）
+				bool instOk = true;
+				string dbgInst = "";
+				try
+				{
+					HurtComponent hc16 = FindComponentOfType<HurtComponent>(cmH);
+					object inst16 = (hc16 != null && _fDamageInstance != null)
+						? _fDamageInstance.GetValue(hc16) : null;
+					if (inst16 != null)
+					{
+						const System.Reflection.BindingFlags BF16 = System.Reflection.BindingFlags.Instance
+							| System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+						FieldInfo fcbc = inst16.GetType().GetField("canBeCollection", BF16);
+						FieldInfo finv = inst16.GetType().GetField("invincible", BF16);
+						FieldInfo fhol = inst16.GetType().GetField("hologram", BF16);
+						if (fcbc != null && finv != null && fhol != null)
+						{
+							bool cbc = (fcbc.GetValue(inst16) is bool v1) && v1;
+							bool inv = (finv.GetValue(inst16) is bool v2) && v2;
+							bool hol = (fhol.GetValue(inst16) is bool v3) && v3;
+							// ★ v1.15.7：**去掉 `invincible` 条件**——实测"蜘蛛网类"（BungiTargetSP）
+							//   `invincible=True` 但仍需要有血量显示（游戏的"无敌"多指"不可被普通攻击
+							//   打死"，并不代表"没有血量"）。改为：可选中 && 非幻象。
+							//   （普通墓碑靠 hitBox=False 拦、科技地砖靠 canBeCollection=False 拦。）
+							instOk = cbc && !hol;
+							dbgInst = " canBeCollection=" + cbc + " invincible=" + inv
+								+ "(不参与判定) hologram=" + hol;
+						}
+					}
+				}
+				catch { }
+				bool attackable = hbOk && instOk;
+				if (_obstacleHpReported.Add("HB16|" + (charName ?? "?")))
+				{
+					Info("可攻击判定[" + (charName ?? "?") + "]：" + dbgHb + dbgInst
+						+ " → 可攻击=" + attackable);
+				}
+				if (!attackable)
+				{
+					return;   // 不可被攻击 → 不显示血量
+				}
+			}
+			catch { }
 			string hpTxt = null;
 			string dbgState = "";
 			string dbgLabel = "";
@@ -781,6 +934,9 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			// 障碍物血量（v1.13.0：坑洞/墓碑/炸弹核弹/大火的"血量 X"）
 			TryCollectObstacleHp(character, SafeCharName(character), lines);
 
+			// ★ v1.15.8：Godot Timer 型"消失倒计时"（蜘蛛网 BungiTargetSP 等限时物件）
+			TryCollectGodotTimerLine(character, lines);
+
 			// 组件链（加农炮/计时器/咀嚼/长大/周期/消化/产出/土豆雷/篮球/投石车/蓄能）
 			ComponentManager components = character.componentManager;
 			if (components != null && lines.Count < MaxTotalLines)
@@ -1152,8 +1308,16 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				}
 				else if (!armRole)
 				{
-					// 核弹磁力菇（armRole）的"就绪"由 ⓪ 段的"可发射"表达，这里不重复
-					lines.Add(("装填 就绪", ReadyColor));
+					// 核弹磁力菇（armRole）的"就绪"由 ⓪ 段的"可发射"表达，这里不重复。
+					// ★ v1.15.1：改用官方方法 `CannonComponent.CanFire()`（源码实现：
+					//   `Alive && Lifecycle==Active && _runtimeInitialized && canFire && 父节点有效`
+					//   且状态机已初始化）——比"读不到剩余时间就当就绪"更准确。
+					bool canFire15 = false;
+					try { canFire15 = cannon.CanFire(); } catch { }
+					if (canFire15)
+					{
+						lines.Add(("装填 就绪", ReadyColor));
+					}
 				}
 			}
 		}
@@ -2012,6 +2176,10 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				//   常驻噪音（"攻速 -50%"）却漏掉真实变化（寒冰杨桃的"弹数 +1"）。
 				// (1) 速度倍率：**绝对倍率**（来自加速 buff 的 timeScaleValue）——不依赖基线，
 				//     这样"非发射型但有加速 buff 的角色"也能显示（v1.10.6）。buff 在=加成中。
+				// ★ v1.15.2 **回退**：`character.timeScale` **不能用作"植物加速倍率"**——
+				//   实测它含**游戏全局快进倍率**（日志：所有植物恒为 3），与 buff 倍率相乘后
+				//   产生离谱值（用户报"毁灭咖啡豆+咖啡三叶草 → +1400%"）。
+				//   恢复：`spd` 只来自 buff 的 timeScaleValue / FireComponent.timeScale。
 				if (spd > 1.0001)
 				{
 					lines.Add(("加速 +" + ((spd - 1.0) * 100.0).ToString("0") + "%", ReadyColor));
@@ -2031,16 +2199,30 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 						lines.Add(("攻速 +" + ((ratioF - 1.0) * 100.0).ToString("0") + "%", ReadyColor));
 					}
 				}
-				// (1.4) 猫尾草类"动画提速"（v1.11.5 回退为仅猫尾草类）★ 猫窝加成的真实落点——
-				//   探针实证动画 `_timeScale` 1→5/6；v1.11.4 的"全角色覆盖"因动画基准速度
-				//   天生各异（僵尸等误报）已回退，只对猫尾草类（猫窝的加成对象）显示。
+				// (1.4) ★ **猫窝加速**（v1.15.0 由新解包源码**定案**）——
+				//   `FireComponent.cs`：`public bool hasCatPumpkin;`（每 30 物理帧检测：
+				//   `physiqueTypeFlags & 0x100` 的猫尾草类且 `parent.cell.HasCharacter("PlantCatPumpkin")`）；
+				//   倍率来自 `GetCatPumpkinFireRateScale()` —— **`return 2f`（×2）**，
+				//   且同时作用于发射计时器（`timerRunScale *= ...`）与动画
+				//   （`sprite.timeScale = ... * GetCatPumpkinFireRateScale()`）。
+				//   ⇒ 直接读 hasCatPumpkin 显示"猫窝加速 ×2"（比此前"动画×6"的间接观测准确）。
 				try
 				{
-					double animTs;
-					if (_catAnimTs.TryGetValue(charName ?? "?", out animTs) && animTs > 1.2
-						&& lines.Count < MaxTotalLines)
+					ComponentManager cm15 = character.componentManager;
+					if (cm15 != null)
 					{
-						lines.Add(("动画 ×" + animTs.ToString("0.#"), ReadyColor));
+						FireComponent fc15 = FindComponentOfType<FireComponent>(cm15);
+						bool hp15 = false;
+						try { hp15 = (fc15 != null) && fc15.hasCatPumpkin; } catch { }
+						if (hp15 && lines.Count < MaxTotalLines)
+						{
+							lines.Add(("猫窝加速 ×2", ReadyColor));
+						}
+						if (_obstacleHpReported.Add("CAT|" + (charName ?? "?")))
+						{
+							Info("猫窝加速判定[" + (charName ?? "?") + "]：Fire=" + (fc15 != null)
+								+ " hasCatPumpkin=" + hp15);
+						}
 					}
 				}
 				catch { }
@@ -2241,17 +2423,8 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		col1.Alignment = BoxContainer.AlignmentMode.Begin;
 		col1.AddChild(vbox);   // 游戏自带列表（对象引用，reparent 不破坏游戏脚本）
 
-		// 署名/防冒用声明行（用户要求加在开关处）——样式与开关一致（黑描边 5），
-		// 字号比开关略小以示低调；点击穿透（不挡操作）。
-		Label sign = new Label();
-		sign.Name = OptionAuthorLabelName;
-		sign.Text = "apple1949开发中 请勿冒用发布！";
-		sign.HorizontalAlignment = HorizontalAlignment.Center;
-		sign.MouseFilter = Control.MouseFilterEnum.Ignore;
-		sign.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
-		sign.AddThemeConstantOverride("outline_size", 5);
-		sign.AddThemeFontSizeOverride("font_size", 14);
-		col1.AddChild(sign);
+		// 署名/防冒用声明行（v1.15.4：移到**第三列最后一行**——用户要求）；
+		// 在第 3 列组装完成后追加（见下方 col3.AddChild(sign)）。
 
 		// 3) 第 2、3 列：**总开关 + 10 类功能开关**（v1.13.2：总开关从第 1 列移到第 2 列顶部，
 		//    列间距调紧到 6，确保 5 行都能显示出来——此前第 2/3 列只显示 4 行）
@@ -2280,7 +2453,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		string[] ftext = { "装填与核能", "障碍物消失", "障碍物血量", "选卡栏种植CD", "生成计时", "角色计时器其他CD", "成长与充能", "产出倒计时", "战斗辅助", "等级与加速" };
 		// v1.13.5：**显示顺序表**（用户要求："战斗辅助"与"生成计时"互换位置）——
 		//   功能索引不变（文本/配置键/探针仍按原 idx），只调显示位次与"前5/后5"的列分配。
-		int[] order = { 0, 1, 2, 3, 8, 5, 6, 7, 4, 9 };
+		int[] order = { 0, 1, 2, 3, 8, 9, 6, 7, 4, 5 };   // v1.15.2：角色计时其他CD(5) 与 等级与加速(9) 互换位置
 		for (int k = 0; k < order.Length; k++)
 		{
 			int idx = order[k];   // 捕获副本（for 循环变量共享，必须复制）
@@ -2288,21 +2461,39 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				GetFeatureValue(idx), idx);
 			VBoxContainer target = (k < 5) ? col2 : col3;
 			target.AddChild(fcb);
-			// v1.13.6：给"战斗辅助"（idx 8）加一行小字说明（其包含的 6 项）
-			if (idx == 8)
+			// v1.15.2：为"说明型"开关加一行小字说明（战斗辅助 / 角色计时器其他CD / 等级与加速），
+			//   文字多则自动换行（AutowrapMode + 限定宽度）。
+			string subTxt = null;
+			if (idx == 8) { subTxt = "— 咀嚼·消化·土豆雷·篮球·投石车·啃碑 —"; }
+			else if (idx == 5) { subTxt = "— 开火·蓄力·张开·闭合·倒计时·销毁·布雷·放置·限时 —"; }
+			else if (idx == 9) { subTxt = "— 加速·攻速·弹数·伤害·动画·加成buff —"; }
+			if (subTxt != null)
 			{
 				Label sub = new Label();
-				sub.Name = "ModFeatureCb8Sub";
-				sub.Text = "— 咀嚼·消化·土豆雷·篮球·投石车·啃碑 —";
+				sub.Name = "ModFeatureCb" + idx + "Sub";
+				sub.Text = subTxt;
 				sub.HorizontalAlignment = HorizontalAlignment.Center;
 				sub.MouseFilter = Control.MouseFilterEnum.Ignore;
 				sub.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
 				sub.AddThemeConstantOverride("outline_size", 4);
 				sub.AddThemeFontSizeOverride("font_size", 11);
 				sub.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f, 1f));
+				sub.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+				sub.CustomMinimumSize = new Vector2(230f, 0f);
 				target.AddChild(sub);
 			}
 		}
+
+		// ★ v1.15.4：署名/防冒用行放在**第三列的最后一行**（用户要求；原在第 1 列游戏列表下方）
+		Label sign = new Label();
+		sign.Name = OptionAuthorLabelName;
+		sign.Text = "apple1949开发中 请勿冒用发布！";
+		sign.HorizontalAlignment = HorizontalAlignment.Center;
+		sign.MouseFilter = Control.MouseFilterEnum.Ignore;
+		sign.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+		sign.AddThemeConstantOverride("outline_size", 5);
+		sign.AddThemeFontSizeOverride("font_size", 14);
+		col3.AddChild(sign);
 
 		hbox.AddChild(col1);
 		hbox.AddChild(col2);
@@ -3344,7 +3535,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// 诊断日志总开关（v1.14.1 用户要求：**注释 log 生成**）——false 时 `Info` 全部静默。
 	/// 诊断代码与探针逻辑完整保留（只是跳过输出），改回 true 即恢复；`Warn`（异常报告）不受影响。
 	/// </summary>
-	private const bool EnableInfoLog = false;
+	private const bool EnableInfoLog = false;   // v1.16.3：验证完毕，关闭诊断日志
 
 	private void Info(string msg)
 	{

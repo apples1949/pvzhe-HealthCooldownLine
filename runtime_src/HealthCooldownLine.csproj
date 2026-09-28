@@ -12,7 +12,12 @@
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
-    <AssemblyName>ModAssembly</AssemblyName>
+    <!-- ★ v1.15.6：程序集**身份名**改为唯一名，避免与其他 Mod 的 "ModAssembly" 程序集冲突
+         （CLR 按"程序集身份"识别，两个 Mod 各自的 DLL 都叫 ModAssembly.dll 时可能撞车）。
+         打包环节会把产物**改名为 ModAssembly.dll** 放进包内 Runtime/——因为 mod.json 的
+         `runtimeAssembly` 是**硬编码字面量** `Runtime/ModAssembly.dll`，入口文件名不可变；
+         改的只是"身份"，不改"文件名"。 -->
+    <AssemblyName>JTYHealthCooldownLine</AssemblyName>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
