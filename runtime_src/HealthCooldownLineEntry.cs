@@ -162,6 +162,17 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			{
 				return false;   // v1.14.0：坑洞也排除（不显示血量）
 			}
+			// ★★ v1.16.4（用户："障碍物血量会显示普通罐子的血量，不应该显示；
+			//   植物罐子和僵尸罐子目前是正常不显示的"）：
+			//   罐子系角色类名是 `TowerDefenseVaseNormal` / `TowerDefenseVasePlant` /
+			//   `TowerDefenseVaseZombie` / `TowerDefenseVaseSquashBlack`（基类 `TowerDefenseVase`）。
+			//   `VasePlant`/`VaseZombie` 因为名字里带 Plant/Zombie 被上面拦下了，
+			//   **`VaseNormal`（普通罐子）名字里两样都没有** ⇒ 漏网，把罐子的"血量"也显示了。
+			//   ⇒ 统一按 `Vase` 排除（罐子是"容器"，不是有血量的障碍物）。
+			if (tn.Contains("Vase"))
+			{
+				return false;
+			}
 			ComponentManager cmL = ch.componentManager;
 			if (cmL == null)
 			{

@@ -1,0 +1,10 @@
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\bin\Release\JTYHealthCooldownLine.deps.json
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\bin\Release\JTYHealthCooldownLine.dll
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\obj\Release\HealthCooldownLine.csproj.AssemblyReference.cache
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\obj\Release\HealthCooldownLine.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\obj\Release\HealthCooldownLine.AssemblyInfoInputs.cache
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\obj\Release\HealthCooldownLine.AssemblyInfo.cs
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\obj\Release\HealthCooldownLine.csproj.CoreCompileInputs.cache
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\obj\Release\JTYHealthCooldownLine.dll
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\obj\Release\refint\JTYHealthCooldownLine.dll
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\obj\Release\ref\JTYHealthCooldownLine.dll
