@@ -1,0 +1,12 @@
+[compile] RC=0
+0 个警告
+    0 个错误
+
+已用时间 00:00:01.17
+[compile] OK
+[package] RC=0
+OK -> C:\Users\apples1949\Desktop\植物大战僵尸杂交重制版\mods\HealthCooldownLine\dist\HealthCooldownLine.pmod
+  大小: 28060 字节
+  内容: ['mod.json', 'Runtime/ModAssembly.dll']
+  包内 DLL md5: 6571d954d882fc0c29d82ae35caa532a （应与 bin/Release 及装机包一致）
+[install] C:\Users\apples1949\AppData\Roaming\Godot\app_userdata\植物大战僵尸杂交版\Mods\HealthCooldownLine.pmod (28060 B)

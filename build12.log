@@ -1,0 +1,12 @@
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(112,15): warning CS0169: 从不使用字段“HealthCooldownLineEntry._dbgNoCharReported” [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(1553,15): warning CS0169: 从不使用字段“HealthCooldownLineEntry._initFaultReported” [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+  HealthCooldownLine -> C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\bin\Release\ModAssembly.dll
+
+已成功生成。
+
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(112,15): warning CS0169: 从不使用字段“HealthCooldownLineEntry._dbgNoCharReported” [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(1553,15): warning CS0169: 从不使用字段“HealthCooldownLineEntry._initFaultReported” [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+    2 个警告
+    0 个错误
+
+已用时间 00:00:02.83

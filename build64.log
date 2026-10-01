@@ -1,0 +1,5 @@
+  正在确定要还原的项目…
+  已还原 C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj (用时 167 毫秒)。
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(3386,4): warning CS0162: 检测到无法访问的代码 [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(409,15): warning CS0169: 从不使用字段“HealthCooldownLineEntry._dbgNoCharReported” [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]
+C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLineEntry.cs(3374,15): warning CS0169: 从不使用字段“HealthCooldownLineEntry._initFaultReported” [C:\Users\txgcs\WorkBuddy\zjb\mod\HealthCooldownLine\runtime_src\HealthCooldownLine.csproj]

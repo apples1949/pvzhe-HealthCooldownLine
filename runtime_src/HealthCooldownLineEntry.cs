@@ -588,6 +588,12 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	// 蓄能识别失败诊断探针（每角色名一次）
 	private readonly System.Collections.Generic.HashSet<string> _chargeProbeReported
 		= new System.Collections.Generic.HashSet<string>();
+	// ★ v1.17.0：等级型植物（增压大喷菇 / 豆荚壳）——"等级与加速"类
+	//   （与上面的蓄能类区分：那两套是"充能计时"，这两只是"叠种升级"）
+	private readonly System.Collections.Generic.HashSet<string> _lvReported
+		= new System.Collections.Generic.HashSet<string>();
+	private readonly System.Collections.Generic.Dictionary<Type, System.Reflection.FieldInfo[]> _lvFieldCache
+		= new System.Collections.Generic.Dictionary<Type, System.Reflection.FieldInfo[]>();
 	// 海草抓取 / 啃碑 诊断探针（每角色名一次）
 	private readonly System.Collections.Generic.HashSet<string> _tkReported
 		= new System.Collections.Generic.HashSet<string>();
@@ -949,6 +955,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			TryCollectGodotTimerLine(character, lines);
 
 			// 组件链（加农炮/计时器/咀嚼/长大/周期/消化/产出/土豆雷/篮球/投石车/蓄能）
+			//   （其中 ⑩ 段负责"等级型植物"的等级显示）
 			ComponentManager components = character.componentManager;
 			if (components != null && lines.Count < MaxTotalLines)
 			{
@@ -1935,6 +1942,61 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			}
 		}
 		catch { }
+
+		// ⑩ 等级型植物（v1.17.0，用户需求）：**增压大喷菇（PlantStressShroom）** 与
+		//   **豆荚壳（PlantPumpkinPea）** —— 这两只靠「叠种」升级，等级是它们最关键的数值，
+		//   此前完全没显示（用户："cd显示mod不会正确显示增压大喷菇的等级，参考充能阳光显示等级"）。
+		//
+		//   机制（源码定案）：
+		//     · `TowerDefensePlantStressShroom`（Chapter7）：`public int level = 1`、
+		//       `private const int MaxLevel = 4`，`Cover()` 里
+		//       `level = Mathf.Clamp(同种.level + 1, 1, 4)` → 每叠一株升一级；
+		//       `SetAttackDamageForLevel`：伤害 = 20 + (lv-1)*20。
+		//     · `TowerDefensePlantPumpkinPea`（Chapter7）：同样形态，`Clamp(… + 1, 1, 3)`，上限 3。
+		//   显示口径（与"充能阳光菇/蓄能咖啡豆"的 `充能N` 对齐）：**`等级 N/M`**。
+		//
+		//   ⚠️ 识别判据：**必须带 `public void LevelSet(int)` 才算**——这是"叠种升级"型
+		//      独有的公开接口；光看 `level` 字段会误伤 `TowerDefensePlantSunShroomCharge`
+		//      （它也有 level，但那是"按时间充能"、已由 ②.10 分支接管并显示 `充能N`）。
+		//      ⚠️ 与 ②.10 的先后顺序是**故意的**：充能类先接管，这里只兜住"剩下的"。
+		bool levelHandled = false;
+		try
+		{
+			FieldInfo fLv, fLvMax;
+			GetLevelFields(character.GetType(), out fLv, out fLvMax);
+			if (fLv != null)
+			{
+				// 排除充能类：它们由 ②.10 显示"充能N"，这里不重复。
+				// 判据 = 有 `_chargeLevel`（蓄能咖啡豆）或 `_produceInterval`（充能阳光菇）。
+				bool isChargeKind = (FindFieldAlong(character.GetType(), "_chargeLevel") != null)
+					|| (FindFieldAlong(character.GetType(), "_produceInterval") != null);
+				if (!isChargeKind)
+				{
+					int lv = ReadConstOrFieldInt(fLv, character, 0);
+					int lvMax = ReadConstOrFieldInt(fLvMax, character, 0);
+					levelHandled = true;
+					if (_lvReported.Add(charName ?? "?"))
+					{
+						Info("等级[" + (charName ?? "?") + "]：类型=" + character.GetType().Name
+							+ " level=" + lv + " MaxLevel=" + lvMax);
+					}
+					// 等级 1 = 刚种下、没有升级信息量 ⇒ 不占行（血条已经够挤）；
+					// 升过级才显示，玩家一眼就知道"这株被叠过"。
+					if (lv >= 2 && lines.Count < MaxTotalLines)
+					{
+						string lvTxt = (lvMax > 0)
+							? ("等级 " + lv + "/" + lvMax)
+							: ("等级 " + lv);
+						lines.Add((lvTxt, ReadyColor));
+					}
+				}
+			}
+		}
+		catch { }
+		if (levelHandled)
+		{
+			return;
+		}
 
 		// ⑨ 速度倍率 + 攻速倍率（需求 5，归"等级与加速"类）：
 		//   (a) 速度倍率：角色 buff 容器里的加速 buff（BuffCoffee / BuffMagicRootHaste 等）
@@ -3142,6 +3204,96 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		}
 		return null;
 
+	}
+
+	/// <summary>
+	/// ★ v1.17.0：**等级型植物**（叠种升级）的字段（沿类型链找，按类型缓存）：
+	/// `level`（当前等级，`public int level = 1`）/ `MaxLevel`（等级上限，`private const int`）。
+	///
+	/// 识别判据 = **该类型有 `public void LevelSet(int)` 方法**：
+	///   · `TowerDefensePlantStressShroom`（增压大喷菇）→ `LevelSet(int)` ✅ 上限 4
+	///   · `TowerDefensePlantPumpkinPea`（豆荚壳）    → `LevelSet(int)` ✅ 上限 3
+	///   · `TowerDefensePlantSunShroomCharge`（充能阳光菇）→ **没有** `LevelSet` ❌
+	///     它的 level 来自"按时间充能"，由 ②.10 分支显示 `充能N`，不能在这里重复。
+	///
+	/// ⚠️ 为什么不靠"有没有 level 字段"判定：蓄能咖啡豆/充能阳光菇都有 level，
+	///   那样会误伤并把它们的显示吃掉（用户的"充能阳光显示等级"就是 ②.10 的成果）。
+	/// ⚠️ `MaxLevel` 是 **const**（编译期字面量）⇒ `GetValue` 会抛
+	///   `InvalidOperationException`，必须先用 `GetRawConstantValue()` 取；
+	///   两者都包在 try 里，取不到就按 0 处理（显示成不带 `/上限` 的 `等级 N`）。
+	/// </summary>
+	private void GetLevelFields(Type t,
+		out FieldInfo fLevel, out FieldInfo fMaxLevel)
+	{
+		FieldInfo[] arr;
+		if (_lvFieldCache.TryGetValue(t, out arr))
+		{
+			fLevel = arr[0]; fMaxLevel = arr[1];
+			return;
+		}
+		fLevel = null;
+		fMaxLevel = null;
+		try
+		{
+			// 只在"确属叠种升级型"时采信 level 字段
+			bool hasLevelSet = false;
+			const BindingFlags MF = BindingFlags.Instance | BindingFlags.Public
+				| BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+			for (Type cur = t; cur != null && !hasLevelSet; cur = cur.BaseType)
+			{
+				MethodInfo mi = cur.GetMethod("LevelSet", MF);
+				if (mi != null && mi.GetParameters().Length == 1)
+				{
+					hasLevelSet = true;
+				}
+			}
+			if (hasLevelSet)
+			{
+				fLevel = FindFieldAlong(t, "level");
+				fMaxLevel = FindFieldAlong(t, "MaxLevel");
+			}
+		}
+		catch
+		{
+			fLevel = null;
+			fMaxLevel = null;
+		}
+		_lvFieldCache[t] = new FieldInfo[] { fLevel, fMaxLevel };
+	}
+
+	/// <summary>
+	/// 读等级字段的整数值。`MaxLevel` 是 const（字面量）⇒ `FieldInfo.GetValue` 对
+	/// 字面量字段会抛 `InvalidOperationException`，必须先走 `GetRawConstantValue()`。
+	/// 取不到返回 fallback。
+	/// </summary>
+	private static int ReadConstOrFieldInt(FieldInfo fi, object instance, int fallback)
+	{
+		if (fi == null)
+		{
+			return fallback;
+		}
+		try
+		{
+			if (fi.IsLiteral)
+			{
+				object raw = fi.GetRawConstantValue();
+				if (raw != null)
+				{
+					return Convert.ToInt32(raw);
+				}
+			}
+		}
+		catch { }
+		try
+		{
+			object v = fi.GetValue((fi.IsStatic || fi.IsLiteral) ? null : instance);
+			if (v != null)
+			{
+				return Convert.ToInt32(v);
+			}
+		}
+		catch { }
+		return fallback;
 	}
 
 	/// <summary>
