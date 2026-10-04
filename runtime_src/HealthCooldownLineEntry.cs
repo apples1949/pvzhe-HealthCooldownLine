@@ -82,6 +82,8 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	private const string OptionRootName = "BattleOption";
 	/// <summary>注入的 CheckBox 节点名（幂等判断用）。</summary>
 	private const string OptionCheckBoxName = "ModCooldownCheckBox";
+	/// <summary>「只显示 ≥5 秒」CheckBox 的节点名（v1.19.0）。</summary>
+	private const string OnlyLongCheckBoxName = "ModOnlyLongCheckBox";
 	/// <summary>两列布局的外层水平容器名（幂等判断用）。</summary>
 	private const string OptionColumnsName = "ModOptionColumns";
 	/// <summary>本 Mod 所在的新列（右列）名。</summary>
@@ -507,6 +509,34 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	private bool _showCombat = true;
 	/// <summary>等级与加速（加速/攻速/弹数/伤害/动画/加成 buff）。</summary>
 	private bool _showLevel = true;
+	/// <summary>
+	/// ★ v1.19.0「只显示 ≥5 秒」总过滤（用户要求"不显示低于 4.9 秒的计时"）。
+	///
+	/// **优先级仅次于总开关**：总开关关闭 ⇒ 一行都不显示；本开关打开 ⇒ 在已通过
+	/// 各类开关的行里，再滤掉低于阈值的秒数。UI 上放在第 2 列**总开关的下一行**。
+	///
+	/// 默认 **false**（不改变老用户现有观感）。配置键见 <see cref="OnlyLongKey"/>。
+	/// </summary>
+	private bool _onlyLongTimers;
+
+	/// <summary>
+	/// 「只显示 ≥5 秒」的阈值（秒）。
+	///
+	/// 用户原话是"不显示低于 4.9 秒的" —— 因为显示格式是 `ToString("0.0")`，
+	/// **4.9 是"能被格式化出来"的最小值**（4.86 会四舍五入成 "4.9"）。
+	///
+	/// ⚠️ 判定用的是**文本里解析出来的值**，而文本只有 1 位小数
+	///   ⇒ `"4.9s"` 既有可能是 4.90、也有可能是 4.85~4.94 ⇒ **无法区分**。
+	///   所以这里按用户字面要求处理：**解析值 &lt; 4.9 一律滤掉** ⇒ `"4.9s"` 会被滤掉
+	///   （它代表的是"接近 5 秒但不足"的那一档）。
+	///   想让"显示 4.9s 也保留"，把这里改成 4.89；
+	///   想让"显示 5.0s 及以上才保留"，改成 4.95。
+	/// </summary>
+	private const double ShortTimerThresholdSeconds = 4.9;
+
+	/// <summary>「只显示 ≥5 秒」的配置键名。</summary>
+	private const string OnlyLongKey = "only_long_timers";
+
 	/// <summary>10 类功能开关的配置键名（与 UI 节点名一一对应）。</summary>
 	private static readonly string[] FeatureKeys =
 	{
@@ -570,6 +600,27 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	private readonly System.Collections.Generic.HashSet<string> _magReported
 		= new System.Collections.Generic.HashSet<string>();
 	private readonly System.Collections.Generic.HashSet<string> _prodReported
+		= new System.Collections.Generic.HashSet<string>();
+
+	/// <summary>
+	/// IZM 血量产出：每株植物**历史上最多消耗掉的段数**（键 = 角色名）。
+	///
+	/// ⚠️ 为什么要记"历史最大值"：`hpNext` 是**阈值游标**，只在 `hitpoints &lt;= hpNext`
+	///   时递减。刚种下时 `hpNext = 满血 − 一段`，血量若一直高于它，`hpNext` 就**不动**
+	///   ⇒ 直接用它算会得出"剩余次数永远是满的"，而且治疗完全不影响它。
+	///   但它对同一株植物是**单调递减**的，所以同一株的 `consumed` 只会变大、不会变小。
+	///   取历史最大值（而不是当前值）是为了让总次数不因实例重建而漂移，
+	///   剩余次数 = 历史最大值 − 当前已消耗，于是"治疗"不会让数字涨回去。
+	/// </summary>
+	private readonly System.Collections.Generic.Dictionary<string, int> _prodConsumedMax
+		= new System.Collections.Generic.Dictionary<string, int>();
+
+	/// <summary>IZM 血量产出：本条只报一次。</summary>
+	private readonly System.Collections.Generic.HashSet<string> _izmProdReported
+		= new System.Collections.Generic.HashSet<string>();
+
+	/// <summary>泡椒罐子诊断：每条只报一次（v1.19.3）。</summary>
+	private readonly System.Collections.Generic.HashSet<string> _jalaReported
 		= new System.Collections.Generic.HashSet<string>();
 	// 蓄能咖啡豆（角色级充能）
 	private readonly System.Collections.Generic.HashSet<string> _chargeReported
@@ -712,6 +763,8 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	private FieldInfo _fPerStaticTime, _fPerTimer;
 	private FieldInfo _fMagBreakTotal, _fMagBreakTimer, _fMagArmor;
 	private FieldInfo _fProdTimer, _fProdEffInterval, _fProdInterval, _fProdType;
+	/// <summary>IZM 血量产出的阈值游标与步长（v1.18.0 新增，见 ProduceComponent 的注释）。</summary>
+	private FieldInfo _fProdHpNext, _fProdHpNextInterval;
 	private FieldInfo _fTkCur, _fTkMax;
 	private FieldInfo _fGraveDur, _fGraveRun, _fGraveStart;
 	private FieldInfo _fAtkInterval, _fAtkTimer, _fAtkIntervalBase;
@@ -960,6 +1013,28 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			if (components != null && lines.Count < MaxTotalLines)
 			{
 				TryCollectInfo(components, character, SafeCharName(character), lines);
+			}
+
+			// ★ v1.19.0：「只显示 ≥5 秒」过滤（用户要求"不显示低于 4.9 秒的计时"）。
+			//   **唯一的过滤点**，放在这里的好处：
+			//     · 收集端一行都不用改（29 处 lines.Add 全部自动受控）；
+			//     · 全部被滤掉时会走下面的 lines.Count == 0 分支 ⇒ 自动收起面板，
+			//       不会留一个空白框。
+			//   ⚠️ 只过滤"秒"计时行（`12.3s` / `0.0s`），**不过滤**：
+			//     · 毫秒行（`123ms`）—— 那是另一套语义；
+			//     · 非计时行（`血量 300`、`脑光 剩 4/6 次`、`可发射`、`长大 就绪`…）
+			//       —— 它们没有 "数字s" 形态，解析不出来就一律保留。
+			//   ⇒ 阈值判定用**原始数值**，不看四舍五入后的字符串
+			//     （4.86s 会显示成 "4.9s"，但仍然会被滤掉）。
+			if (_onlyLongTimers)
+			{
+				for (int fi = lines.Count - 1; fi >= 0; fi--)
+				{
+					if (IsShortTimerText(lines[fi].Text))
+					{
+						lines.RemoveAt(fi);
+					}
+				}
 			}
 
 			if (lines.Count == 0)
@@ -1739,10 +1814,25 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		//   剩余 = 有效间隔 − timer（timer 从 0 递增，产出瞬间归零循环）。
 		//   有效间隔优先读 _effectiveProduceInterval（受 buff/等级影响），退化用 _produceInterval。
 		//   显示词由 produceType 决定：Coin→金币、Packet→卡包、其余（Sun/JalaSun/…）→阳光。
+		//
+		// ★★★ v1.19.1（用户要求）：**我是僵尸 / 我是僵尸大冒险 下不显示这条**。
+		//   原因（`ProduceComponent.PhysicsProcessValidated` 的分支）：
+		//       if (parent is TowerDefensePlant && _IZMMode)
+		//           ProcessHealthProduction(physicsFrame);   // ← 掉血产出，**根本不走 timer**
+		//       else
+		//           ProcessTimedProduction(...);             // ← 只有这条才用 timer
+		//   ⇒ 在 IZM 系里 `timer` 一直是 0、"间隔 − timer" 会显示成一个**假的满额倒计时**
+		//     （看着像"还要等 25 秒才产阳光"，其实永远不产）。
+		//   ⇒ 该模式下这株植物改由 ②.10 的「脑光/阳光 剩 N/M 次」接管，本行必须让位。
+		//
+		//   ⚠️ **充能等级不受影响**：充能（充能阳光菇 / 蓄能咖啡豆）在上面的 ②.8
+		//     分支里已经 `chargeHandled = true`，而本块开头就是 `!chargeHandled`
+		//     ⇒ 充能系**结构上就不可能**走到这里，等级行（"充能N X.Xs"）照常显示。
+		//   ⚠️ 按用户要求**不加开关**（这是"不生产就不该显示时间"的语义修正，不是偏好）。
 		try
 		{
 			ProduceComponent pc = cm.GetRuntime<ProduceComponent>(ProduceInstanceId);
-			if (pc != null && _fProdTimer != null && !chargeHandled)
+			if (pc != null && _fProdTimer != null && !chargeHandled && !IsHealthProduceComponent(pc))
 			{
 				double interval = 0;
 				if (_fProdEffInterval != null && _fProdEffInterval.GetValue(pc) != null)
@@ -1785,6 +1875,363 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				if (CatOn(7) && interval > 0 && remS > 0 && lines.Count < MaxTotalLines)
 				{
 					lines.Add((label + " " + remS.ToString("0.0") + "s", BusyColor));
+				}
+			}
+		}
+		catch { }
+
+		// ②.10 IZM「血量产出」剩余触发次数（v1.18.0 新增，用户 2026-10-01 需求）
+		//
+		// ── 机制（读源码得到的硬事实，非推测）─────────────────────────────
+		// `ProduceComponent.PhysicsProcessValidated`：
+		//     if (parent is TowerDefensePlant && _IZMMode)
+		//         ProcessHealthProduction(physicsFrame);   // ← 血量产出走这条
+		//     else
+		//         ProcessTimedProduction(...);             // ← 平时走"计时产出"
+		//
+		// `ProduceComponent.ProcessHealthProduction`：
+		//     while (parent.instance.hitpoints <= hpNext && hpNextInterval > 0f && num < num2)
+		//     {
+		//         hpNext -= hpNextInterval;                 // ← 游标单向递减
+		//         ProduceAtConfiguredPositions(num, emitEvent: true, physicsFrame);
+		//         num++;
+		//     }
+		//
+		// `ProduceComponent.InitializeHealthProductionState`：
+		//     hpNextInterval = hitpoints / healthProductionSegments;   // 每段血量
+		//     hpNext         = hitpoints - hpNextInterval;             // 初始游标（满血）→ 段数恒为 0
+		//
+		// ⇒ **触发次数由"掉血跨过阈值"驱动，与时间无关**；
+		//   `maxCatchUpProductions`（默认 1）只限制**单帧内**的追赶上限，不限制总次数。
+		//   `num` 就是本次产出的数量（向日葵系 = 阳光/脑光数量）。
+		//
+		//   ⇒ **总可触发次数 = healthProductionSegments**（= 定义里的"生命分段"，
+		//      ModEditor 面板：「IZM 血量生产 · 植物每跨过一个生命阈值生产」，
+		//      注释亦为「一次伤害跨越多段时受追赶上限限制」）。
+		//   ⇒ **剩余次数 = segments − 已消耗段数**。
+		//
+		// ── 触发条件为什么**不能**只看"当前是不是 IZM 关卡"────────────────
+		// `ProduceComponent` 初始化时：
+		//     isBaseIZM = instance.IsIZMMode() || instance.IsIZM2Mode();
+		//     if (isBaseIZM) _IZMMode = true;
+		//     _IZMMode = definition?._IZMMode ?? false;      // ← 定义里的值也会置 true
+		// 而**全库只有一个定义**写了 `_IZMMode = true`：
+		//     Definitions/DisguiserSunFlowerProduceComponentDefinition.tres  →  _IZMMode = true
+		// ⇒ **伪装向日葵在任何模式下都走血量产出**（它出现在第 8 章、杂交乐园、挑战等非 IZM 关卡）。
+		//   ⇒ 判据必须是「**本关卡是 IZM 系** 或 **该组件自己 `_IZMMode`**」，
+		//     否则伪装向日葵在非 IZM 关卡里会漏显示（这是本版修正的第二个坑）。
+		//
+		// ── 治疗会不会增加次数？（用户特别要求核查）────────────────────────
+		// **不会。** `TowerDefenseCharacterInstance.Health(double num)` 只做：
+		//     hitpoints += num;
+		//     RefreshDamagePoint();          // 仅刷新"受伤点"贴图
+		// 全程**不碰 `hpNext` / `hpNextInterval`**。而 `hpNext` 只在 `ProcessHealthProduction`
+		// 里递减、在 `InitializeHealthProductionState`（组件初始化）里按**满血**重置。
+		// ⇒ 治疗既不恢复阈值、也不重置游标，**不会多出任何一次触发**。
+		//   本 Mod 的"剩余次数"因此是**不会因治疗而回涨**的（见 _prodConsumedMax 的注释）。
+		try
+		{
+			if (_fProdHpNext != null && _fProdHpNextInterval != null)
+			{
+				ProduceComponent pcIzm = cm.GetRuntime<ProduceComponent>(ProduceInstanceId);
+				if (pcIzm != null && IsHealthProduceComponent(pcIzm))
+				{
+					object hpNextObj = _fProdHpNext.GetValue(pcIzm);
+					if (hpNextObj != null)
+					{
+						float hpNext = ToFloat(hpNextObj);
+						float step = 0f;
+						if (_fProdHpNextInterval.GetValue(pcIzm) != null)
+						{
+							step = ToFloat(_fProdHpNextInterval.GetValue(pcIzm));
+						}
+						// 总次数 = 定义里的 healthProductionSegments（默认 6）
+						int segments = 6;
+						try
+						{
+							ProduceComponentDefinition def = null;
+							try
+							{
+								PropertyInfo pd = typeof(ProduceComponent).GetProperty(
+									"ComponentDefinition",
+									BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+								if (pd != null)
+								{
+									def = pd.GetValue(pcIzm) as ProduceComponentDefinition;
+								}
+							}
+							catch { }
+							if (def != null && def.healthProductionSegments > 0)
+							{
+								segments = def.healthProductionSegments;
+							}
+						}
+						catch { }
+						// hpNextInterval = 满血 / segments ⇒ 满血 = step * segments
+						double hpMax = (double)step * segments;
+
+						// 防御：异常配置（步长为 0 或段数非正）⇒ 不显示，但**不能 return**，
+						// 否则会跳过本函数后面所有其他信息的收集。
+						if (step > 0.0001f && segments > 0)
+						{
+						// ★ v1.19.2：已触发次数必须**减 1**（用户反馈"显示的不是最大值，而是最大−1"）。
+						//   初始 `hpNext = 满血 − 一段`（InitializeHealthProductionState），
+						//   此时 `(满血 − hpNext)/段长 = 1`，但"已触发"应为 **0**。
+						//   ⇒ 统一走 ConsumedSegments（内部已 −1）。
+						int consumed = ConsumedSegments(hpMax, hpNext, step, segments);
+
+						// 历史最大值：让"总次数"与"已消耗"都不因治疗/实例重建而回退
+						string key = charName ?? "?";
+						int prevMax;
+						if (!_prodConsumedMax.TryGetValue(key, out prevMax))
+						{
+							prevMax = consumed;
+						}
+						else if (consumed > prevMax)
+						{
+							prevMax = consumed;
+						}
+						_prodConsumedMax[key] = prevMax;
+						int total = segments;
+						if (prevMax > total) { total = prevMax; }   // 防御：段数配置变小过
+						int left = total - consumed;
+						if (left < 0) { left = 0; }
+
+						if (_izmProdReported.Add(key))
+						{
+							Info("IZM血量产出[" + key + "]：分段=" + segments
+								+ " 每段血=" + step.ToString("0.##")
+								+ " 满血=" + hpMax.ToString("0.##")
+								+ " hpNext=" + hpNext.ToString("0.##")
+								+ " → 已触发 " + consumed + " 次，显示剩余 " + left + " 次"
+								+ "（治疗不影响：hpNext 单向递减）");
+						}
+
+						if (CatOn(7) && lines.Count < MaxTotalLines)
+						{
+							string prodLabel = "产出";
+							try
+							{
+								string pt = (_fProdType != null)
+									? ((_fProdType.GetValue(pcIzm) as string) ?? "") : "";
+								if (pt.IndexOf("Brain", StringComparison.OrdinalIgnoreCase) >= 0)
+								{
+									prodLabel = "脑光";
+								}
+								else if (pt.IndexOf("Coin", StringComparison.OrdinalIgnoreCase) >= 0)
+								{
+									prodLabel = "金币";
+								}
+								else if (pt.IndexOf("Packet", StringComparison.OrdinalIgnoreCase) >= 0)
+								{
+									prodLabel = "卡包";
+								}
+								else if (pt.Length > 0)
+								{
+									prodLabel = "阳光";
+								}
+							}
+							catch { }
+							Color c = (left > 0) ? ReadyColor : DisabledColor;
+							lines.Add((prodLabel + " 剩 " + left + "/" + total + " 次", c));
+						}
+						}   // ← 结束 step/segments 防御性判断
+					}
+				}
+			}
+		}
+		catch { }
+
+		// ②.10b 「伪装」家族：**类自己内联的 hpNext**（v1.18.0，用户问"对伪装向日葵/伪装机枪射手是否有效"后补）
+		//
+		// ── 为什么必须单独一条（这是我第一版漏掉的）──────────────────────
+		// 「伪装」系列走的**不是** `ProduceComponent`，而是每个类**自己**复制了一份同样的
+		// 血量分段逻辑，字段直接挂在自己身上（都是 `public double hpNext / hpNextInterval`）：
+		//
+		//   TowerDefensePlantDisguiserGatling  (伪装机枪射手)：
+		//       _Ready():        hpNextInterval = instance.hitpoints / 6.0;
+		//                        hpNext = instance.hitpoints - hpNextInterval;
+		//       BatchUpdate():   while (instance.hitpoints <= hpNext) { hpNext -= hpNextInterval; Fire(); }
+		//       DestroySet():    while (hpNext >= 0.0) { hpNext -= hpNextInterval; num++; } Fire(num);
+		//
+		//   TowerDefensePlantDisguiserCherry   (伪装樱桃)   同款 → _explodeComponent.Explode()
+		//   TowerDefensePlantDisguiserBlover   (伪装三叶草) 同款 → BlowMethod()
+		//
+		//   ⚠️ 它们的段数是**硬编码 6.0**（内联在 IL 里，读不到常量），
+		//      与 `ProduceComponentDefinition.healthProductionSegments` 的默认值 6 相同。
+		//      这里用 6 作为总次数；若哪天游戏改了那个 6.0，本行数字会偏大/偏小
+		//      —— 已在 README 里标注这个前提。
+		//
+		//   ⇒ 通用识别规则：**角色实例上直接存在 `hpNext` + `hpNextInterval` 字段**
+		//      （不是它某个组件上的）。这条规则自动覆盖整个伪装家族，
+		//      以后游戏再加伪装植物也无需改本 Mod。
+		//
+		// ── 治疗会不会增加次数？同样**不会** ──────────────────────────────
+		//   与 ProduceComponent 那条同源：`hpNext` 只在 `BatchUpdate` 里递减、
+		//   只在 `_Ready()` 按满血重置；`Health()` 只改 hitpoints，碰不到它。
+		try
+		{
+			float hpNext2 = 0f, step2 = 0f;
+			bool hasInline = false;
+			try
+			{
+				Type ct = character.GetType();
+				FieldInfo fN = ct.GetField("hpNext",
+					BindingFlags.Public | BindingFlags.Instance);
+				FieldInfo fI = ct.GetField("hpNextInterval",
+					BindingFlags.Public | BindingFlags.Instance);
+				if (fN != null && fI != null)
+				{
+					object oN = fN.GetValue(character);
+					object oI = fI.GetValue(character);
+					if (oN != null && oI != null)
+					{
+						hpNext2 = ToFloat(oN);
+						step2 = ToFloat(oI);
+						hasInline = step2 > 0.0001f;
+					}
+				}
+			}
+			catch { }
+
+			if (hasInline)
+			{
+				const int InlineSegments = 6;      // ← 与游戏内联的 `/ 6.0` 对应
+				double hpMax2 = (double)step2 * InlineSegments;
+				// ★ v1.19.2：同样要 −1（见 ConsumedSegments 注释）
+				int consumed2 = ConsumedSegments(hpMax2, hpNext2, step2, InlineSegments);
+				int left2 = InlineSegments - consumed2;
+				if (left2 < 0) { left2 = 0; }
+
+				// 按类名判定"产出型"还是"动作型"
+				string tn = character.GetType().Name;
+				bool isProducer = tn.IndexOf("DisguiserSunFlower", StringComparison.Ordinal) >= 0;
+				string label2 = isProducer ? "脑光" : "次数";
+
+				if (_izmProdReported.Add("inline:" + (charName ?? "?")))
+				{
+					Info("伪装内联血量产出[" + (charName ?? "?") + "] 类型=" + tn
+						+ "：固化分段=" + InlineSegments
+						+ " 每段血=" + step2.ToString("0.##")
+						+ " hpNext=" + hpNext2.ToString("0.##")
+						+ " → 已触发 " + consumed2 + " 次，剩余 " + left2 + " 次"
+						+ (isProducer ? "（产出型）" : "（动作型：" + tn + "）"));
+				}
+
+				if (CatOn(7) && lines.Count < MaxTotalLines)
+				{
+					Color c2 = (left2 > 0) ? ReadyColor : DisabledColor;
+					lines.Add((label2 + " 剩 " + left2 + "/" + InlineSegments + " 次", c2));
+				}
+			}
+		}
+		catch { }
+
+		// ②.11 泡椒罐子（TowerDefensePlantJalaVase）—— 装填个数 + 下一发倒计时（v1.19.3）
+		//
+		// ── 机制（读源码，非推测）──────────────────────────────────────────
+		// `Asset/Anime/Character/Plant/Star/JalaVase/Scene/TowerDefensePlantJalaVase.cs`：
+		//     private const int MAX_JALA_COUNT = 4;
+		//     public Array<TowerDefensePacketConfig> jalaList;   // 已装填的泡椒（≤4）
+		//     public Array<double> timerList = {0,0,0,0};         // 每个泡椒各自的计时
+		//     public double timeNeed = 50.0;                     // 到点即发射
+		//     CanAddJala(): ... && jalaList.Count < 4            // 上限 = MAX_JALA_COUNT
+		//     BatchUpdate(): foreach jala:
+		//         if (timerList[i] < timeNeed) timerList[i] += delta;
+		//         else { timerList[i] = 0; ExecuteJala(jalaList[i]); }   // ← 发射后清零重计
+		// ⇒ **"装填次数" = `jalaList.Count`（0~4）**；每个泡椒装填后各自计时 `timeNeed` 秒发射一次。
+		//
+		// ── 为什么之前没显示 ──────────────────────────────────────────────
+		//   本 Mod 原先只认**组件**（`cm.GetRuntime<T>()`）与少数几个角色类字段，
+		//   而泡椒罐子的状态**全在角色类自己的 public 字段上**（没有对应组件），
+		//   所以一条都没命中 ⇒ 什么都不显示（用户反馈"应该显示装填次数但没显示"）。
+		//
+		// ── 识别方式 ─────────────────────────────────────────────────────
+		//   角色类型上**同时**存在 `jalaList` 与 `timeNeed` 字段 —— 足够独特，不会误伤别的植物。
+		//   归类走「装填与核能」开关（CatOn(0)）：用户原话就是"装填次数"。
+		//   上限读 `MAX_JALA_COUNT` 常量（`private const`，须用 `GetRawConstantValue()`，
+		//   普通 `GetValue` 对 const 会抛 —— 本项目在"等级上限"那里踩过同样的坑）。
+		try
+		{
+			Type jt = character.GetType();
+			FieldInfo fJala = jt.GetField("jalaList",
+				BindingFlags.Public | BindingFlags.Instance);
+			FieldInfo fNeed = jt.GetField("timeNeed",
+				BindingFlags.Public | BindingFlags.Instance);
+			if (fJala != null && fNeed != null && lines.Count < MaxTotalLines)
+			{
+				int jn = 0;
+				try
+				{
+					object o = fJala.GetValue(character);
+					if (o is Godot.Collections.Array ga)
+					{
+						jn = ga.Count;
+					}
+					else if (o is System.Collections.ICollection col)
+					{
+						jn = col.Count;
+					}
+				}
+				catch { }
+				int jmax = 4;
+				try
+				{
+					FieldInfo fMax = jt.GetField("MAX_JALA_COUNT",
+						BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static);
+					if (fMax != null && fMax.GetRawConstantValue() is int mv && mv > 0)
+					{
+						jmax = mv;
+					}
+				}
+				catch { }
+				// 下一发倒计时 = min(timeNeed − timerList[i])，只统计"已装填"的那几个
+				double need = 0.0;
+				try
+				{
+					object o = fNeed.GetValue(character);
+					if (o is double dd) { need = dd; }
+					else if (o is float ff) { need = ff; }
+				}
+				catch { }
+				double soonest = double.MaxValue;
+				try
+				{
+					FieldInfo fT = jt.GetField("timerList",
+						BindingFlags.Public | BindingFlags.Instance);
+					if (fT != null && fT.GetValue(character) is Godot.Collections.Array ta)
+					{
+						int lim = (jn < ta.Count) ? jn : ta.Count;
+						for (int i = 0; i < lim; i++)
+						{
+							double t = 0.0;
+							try { t = ta[i].AsDouble(); } catch { }
+							double rem = need - t;
+							if (rem < soonest) { soonest = rem; }
+						}
+					}
+				}
+				catch { }
+
+				if (_jalaReported.Add(charName ?? "?"))
+				{
+					Info("泡椒罐子[" + (charName ?? "?") + "]：装填=" + jn + "/" + jmax
+						+ " timeNeed=" + need.ToString("0.##")
+						+ " 下一发=" + ((soonest == double.MaxValue) ? "<无>" : soonest.ToString("0.###"))
+						+ "s");
+				}
+
+				if (CatOn(0) && lines.Count < MaxTotalLines)
+				{
+					lines.Add(("装填 " + jn + "/" + jmax,
+						(jn > 0) ? ReadyColor : DisabledColor));
+				}
+				if (jn > 0 && need > 0.0 && soonest != double.MaxValue
+					&& CatOn(0) && lines.Count < MaxTotalLines)
+				{
+					double r = soonest;
+					if (r < 0.0) { r = 0.0; }
+					lines.Add(("发射 " + r.ToString("0.0") + "s", BusyColor));
 				}
 			}
 		}
@@ -2472,6 +2919,13 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					fe.SetPressedNoSignal(want);
 				}
 			}
+			// ★ v1.19.0：「只显示 ≥5 秒」独立开关（不是 10 类之一，单独校准）
+			CheckBox existLongCb = cols.FindChild(OnlyLongCheckBoxName, true, false) as CheckBox;
+			if (existLongCb != null && GodotObject.IsInstanceValid(existLongCb)
+				&& existLongCb.ButtonPressed != _onlyLongTimers)
+			{
+				existLongCb.SetPressedNoSignal(_onlyLongTimers);
+			}
 			return;
 		}
 
@@ -2522,6 +2976,33 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		cb.ButtonPressed = _enabled;
 		cb.Connect("toggled", Callable.From(new Action<bool>(OnToggleChanged)));
 		col2.AddChild(cb);     // 总开关（第 2 列顶部，v1.13.2）
+
+		// ★ v1.19.0：「只显示 ≥5 秒」—— **优先级仅次于总开关**，紧挨着它显示。
+		//   单独一个 CheckBox（不属于 10 类功能），这样它天然排在总开关下一行、
+		//   又在所有分类开关之上，正好符合"优先级仅次于总开关"。
+		CheckBox longCb = new CheckBox();
+		longCb.Name = OnlyLongCheckBoxName;
+		longCb.Text = "只显示 ≥5 秒";
+		longCb.Alignment = HorizontalAlignment.Center;
+		longCb.MouseDefaultCursorShape = Control.CursorShape.PointingHand;
+		longCb.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+		longCb.AddThemeConstantOverride("outline_size", 5);
+		longCb.ButtonPressed = _onlyLongTimers;
+		longCb.Connect("toggled", Callable.From(new Action<bool>(OnOnlyLongChanged)));
+		col2.AddChild(longCb);
+		try
+		{
+			Label longSub = new Label();
+			longSub.Name = OnlyLongCheckBoxName + "Sub";
+			longSub.Text = "— 低于 4.9 秒的计时不显示 —";
+			longSub.HorizontalAlignment = HorizontalAlignment.Center;
+			longSub.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+			longSub.CustomMinimumSize = new Vector2(230f, 0f);
+			longSub.AddThemeFontSizeOverride("font_size", 11);
+			longSub.AddThemeColorOverride("font_color", new Color(0.78f, 0.86f, 0.95f, 1f));
+			col2.AddChild(longSub);
+		}
+		catch { }
 
 		string[] ftext = { "装填与核能", "障碍物消失", "障碍物血量", "选卡栏种植CD", "生成计时", "角色计时器其他CD", "成长与充能", "产出倒计时", "战斗辅助", "等级与加速" };
 		// v1.13.5：**显示顺序表**（用户要求："战斗辅助"与"生成计时"互换位置）——
@@ -2788,8 +3269,22 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		return fcb;
 	}
 
-	private void OnFeatureToggleChanged(int idx, bool on)
+	/// <summary>「只显示 ≥5 秒」开关切换（v1.19.0）。</summary>
+	private void OnOnlyLongChanged(bool on)
 	{
+		try
+		{
+			_onlyLongTimers = on;
+			SaveEnabled();
+			Info("开关[只显示 ≥5 秒] → " + (on ? "开（低于 " + ShortTimerThresholdSeconds.ToString("0.#") + " 秒的计时行不显示）" : "关"));
+		}
+		catch (Exception ex)
+		{
+			Warn("「只显示 ≥5 秒」切换异常（已吞）：" + ex.Message);
+		}
+	}
+
+	private void OnFeatureToggleChanged(int idx, bool on)	{
 		try
 		{
 			SetFeatureValue(idx, on);
@@ -2914,6 +3409,66 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		catch { }
 	}
 
+	/// <summary>
+	/// 该行是不是"低于阈值秒数"的计时行（供「只显示 ≥5 秒」开关使用）。
+	///
+	/// 判定规则（刻意保守，**宁可漏滤也不误滤**）：
+	///   · 行尾必须是 `s`（秒）或 `s` + 空格/括号后缀；
+	///     行尾是 `ms` 的一律**不算**（毫秒是另一套语义，本项目已有那种行）；
+	///   · 从 s 往前取连续数字与小数点，解析成秒数；
+	///   · 解析不出数字（`可发射`/`血量 300`/`脑光 剩 4/6 次`/`长大 就绪`…）
+	///     ⇒ **保留**，不参与过滤。
+	///
+	/// ⚠️ 用 `CultureInfo.InvariantCulture` 解析：本工程文本一律用
+	///   `ToString("0.0")` 生成，不受系统区域影响；但解析端若用当前区域，
+	///   在逗号做小数点的系统上会失败（本项目是中文 Windows，`.` 正常，仍然显式指定更稳）。
+	/// </summary>
+	private static bool IsShortTimerText(string text)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return false;
+		}
+		int s = text.LastIndexOf('s');
+		if (s < 0)
+		{
+			return false;
+		}
+		// 排除 ms
+		if (s >= 1 && (text[s - 1] == 'm' || text[s - 1] == 'M'))
+		{
+			return false;
+		}
+		// s 之后只允许空白或右括号（例如 "阳光 12.3s " / "计时(12.3s)"）
+		for (int i = s + 1; i < text.Length; i++)
+		{
+			char c = text[i];
+			if (!char.IsWhiteSpace(c) && c != ')' && c != '）')
+			{
+				return false;
+			}
+		}
+		// 从 s 往前取数字与小数点
+		int e = s - 1;
+		int b = e;
+		while (b >= 0 && (char.IsDigit(text[b]) || text[b] == '.'))
+		{
+			b--;
+		}
+		if (b == e)
+		{
+			return false;   // s 前没有数字
+		}
+		string num = text.Substring(b + 1, e - b);
+		double v;
+		if (!double.TryParse(num, System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture, out v))
+		{
+			return false;   // 解析失败 ⇒ 保留
+		}
+		return v < ShortTimerThresholdSeconds;
+	}
+
 	private bool CatOn(int cat)
 	{
 		switch (cat)
@@ -2991,6 +3546,9 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			{
 				object v = cf.GetValue("mod", "cooldown_line_enabled", true);
 				_enabled = (v is bool b) ? b : true;
+				// ★ v1.19.0「只显示 ≥5 秒」（缺键默认 false = 不影响老用户观感）
+				object lv = cf.GetValue("mod", OnlyLongKey, false);
+				_onlyLongTimers = (lv is bool lb) ? lb : false;
 				// 6 类功能开关（v1.9.0；缺键时默认开，兼容老配置）
 				for (int i = 0; i < FeatureKeys.Length; i++)
 				{
@@ -3015,6 +3573,8 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		{
 			ConfigFile cf = new ConfigFile();
 			cf.SetValue("mod", "cooldown_line_enabled", _enabled);
+			// ★ v1.19.0「只显示 ≥5 秒」
+			cf.SetValue("mod", OnlyLongKey, _onlyLongTimers);
 			// 6 类功能开关（v1.9.0）
 			for (int i = 0; i < FeatureKeys.Length; i++)
 			{
@@ -3378,8 +3938,156 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// <summary>
 	/// 从运行时注册表里按类型找一个组件实例（不依赖 InstanceId——有些带后缀如 character.attack.0）。
 	/// </summary>
-	private static T FindComponentOfType<T>(ComponentManager cm) where T : class
+	/// <summary>
+	/// 「这株植物走的是血量产出（而非计时产出）」的统一判据。
+	///
+	/// **②.9 计时产出 与 ②.10 血量产出 必须严格互斥** —— 都用本方法判定，
+	/// 一个取反、一个直用，就不可能同时显示（用户反馈"伪装向日葵又显示阳光生产时间
+	/// 又显示次数"就是两者判据不一致造成的）。
+	///
+	/// 两个来源（任一为真即算）：
+	///   ① **关卡**是我是僵尸系（IZM / IZM2）⇒ `ProduceComponent` 初始化时
+	///      `isBaseIZM` 为真 ⇒ `_IZMMode = true` ⇒ 走 `ProcessHealthProduction`；
+	///   ② **该组件自己的 `_IZMMode`**（定义里写死）⇒ 任何模式下都走血量产出。
+	///      全库只有 `DisguiserSunFlowerProduceComponentDefinition.tres` 是这种，
+	///      所以**伪装向日葵在普通关卡里也走血量产出**、没有计时器。
+	/// </summary>
+	private bool IsHealthProduceComponent(ProduceComponent pc)
 	{
+		if (pc == null)
+		{
+			return false;
+		}
+		try
+		{
+			return IsIzmLikeMode() || ReadProduceIzmFlag(pc);
+		}
+		catch { return false; }
+	}
+
+	/// <summary>
+	/// 由血量产出的「已触发次数」。
+	///
+	/// ⚠️⚠️ 公式必须**减 1**（v1.19.2 修，用户反馈"显示的不是最大值，而是最大−1的值"）。
+	///
+	/// 推导（`ProduceComponent` / 伪装家族同款）：
+	///     初始： hpNextInterval = 满血 / segments;
+	///            hpNext         = 满血 − hpNextInterval;      ← 注意是"满血 − 一段"
+	///     触发： while (hitpoints &lt;= hpNext) { hpNext -= 段长; Produce(); }
+	///   ⇒ 满血时 `(满血 − hpNext) / 段长 = 1`，但**一次都还没触发** ⇒ 应减 1。
+	///   ⇒ 第 k 次触发后 `hpNext = 满血 − (k+1)·段长` ⇒ `k = (满血 − hpNext)/段长 − 1`。
+	///
+	/// 例（segments=6）：满血 raw=1 → consumed=0 → 剩余 6/6；
+	///   掉一段 raw=2 → consumed=1 → 剩余 5/6；…最后一次触发在血量归零时。
+	/// </summary>
+	private static int ConsumedSegments(double hpMax, float hpNext, float step, int segments)
+	{
+		if (step <= 0.0001f || segments <= 0)
+		{
+			return 0;
+		}
+		int raw = (int)Math.Floor((hpMax - hpNext) / step + 0.0001);
+		int consumed = raw - 1;
+		if (consumed < 0) { consumed = 0; }
+		if (consumed > segments) { consumed = segments; }
+		return consumed;
+	}
+
+	/// <summary>
+	/// 读 `ProduceComponent._IZMMode`（走不走进度产出）。
+	///
+	/// 依据（`ProduceComponent.cs` 初始化）：
+	///     isBaseIZM = instance.IsIZMMode() || instance.IsIZM2Mode();
+	///     if (isBaseIZM) _IZMMode = true;
+	///     _IZMMode = definition?._IZMMode ?? false;
+	/// 全库只有 `DisguiserSunFlowerProduceComponentDefinition.tres` 把 `_IZMMode` 写成 `true`
+	/// ⇒ **伪装向日葵在任何模式下都走血量产出**，判据必须带上它，
+	///   否则它在第 8 章 / 杂交乐园 / 挑战等非 IZM 关卡里会漏显示。
+	///
+	/// 实例字段与定义字段任意一个为真即算真（实例优先，取不到再读定义）。
+	/// </summary>
+	private bool ReadProduceIzmFlag(ProduceComponent pc)
+	{
+		try
+		{
+			// ① 实例上的 _IZMMode（属性 <_IZMMode>k__BackingField，或同名字段）
+			Type t = pc.GetType();
+			PropertyInfo p = t.GetProperty("_IZMMode",
+				BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+			if (p != null && p.GetValue(pc) is bool pb)
+			{
+				if (pb)
+				{
+					return true;
+				}
+			}
+			FieldInfo f = t.GetField("_IZMMode",
+				BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+			if (f != null && f.GetValue(pc) is bool fb && fb)
+			{
+				return true;
+			}
+			// ② 定义上的 _IZMMode
+			PropertyInfo pd = t.GetProperty("ComponentDefinition",
+				BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+			if (pd != null)
+			{
+				ProduceComponentDefinition def = pd.GetValue(pc) as ProduceComponentDefinition;
+				if (def != null && def._IZMMode)
+				{
+					return true;
+				}
+			}
+		}
+		catch { }
+		return false;
+	}
+
+	/// <summary>
+	/// 当前是否处在「我是僵尸」系模式（IZM / IZM2）。
+	///
+	/// 依据：`TowerDefenseManager.IsIZMMode()` / `IsIZM2Mode()`（均为 public 实例方法），
+	/// 实现上判的是 `currentLevelConfig.finishMethod ∈ {IZM, QUIZ, IZM2}`。
+	/// 这正是 `ProduceComponent` 判断"走血量产出还是计时产出"用的同一套判据
+	/// （`ProduceComponent.cs` L271：`instance.IsIZMMode() || instance.IsIZM2Mode()`），
+	/// 所以**显示条件与游戏内部实际走哪条分支完全一致**，不会出现"显示了但其实是计时产出"。
+	///
+	/// ⚠️ 这里刻意**直接调用** `TowerDefenseManager` 的方法而不是反射：
+	///   本工程 csproj 引用了游戏程序集（同文件的 `CannonComponent` 等也直接用），
+	///   直接调用更清晰、也不会因反射签名写错而静默失效。
+	/// </summary>
+	private static bool IsIzmLikeMode()
+	{
+		try
+		{
+			TowerDefenseManager m = TowerDefenseManager.Instance;
+			if (m == null)
+			{
+				return false;
+			}
+			return m.IsIZMMode() || m.IsIZM2Mode();
+		}
+		catch { return false; }
+	}
+
+	/// <summary>
+	/// 把反射取到的"数值型装箱对象"转成 float。
+	/// ⚠️ **不要用 `Convert.ToSingle(object)`** —— 游戏附带的 .NET 运行时是**裁剪过**的，
+	///   项目已实测 `Convert.ToString(object)` 会抛 `Method not found`（血泪教训）。
+	///   这里按类型显式分支，只走确定存在的 IL 指令。
+	/// </summary>
+	private static float ToFloat(object o)
+	{
+		if (o is float f) { return f; }
+		if (o is double d) { return (float)d; }
+		if (o is int i) { return i; }
+		if (o is long l) { return l; }
+		if (o is short s) { return s; }
+		if (o is byte b) { return b; }
+		return 0f;
+	}
+
+	private static T FindComponentOfType<T>(ComponentManager cm) where T : class	{
 		try
 		{
 			System.Collections.IDictionary dic = GetRuntimeDict(cm);
@@ -3624,6 +4332,11 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			_fProdEffInterval = prodType.GetField("_effectiveProduceInterval", F);
 			_fProdInterval = prodType.GetField("_produceInterval", F);
 			_fProdType = prodType.GetField("<produceType>k__BackingField", F);
+			// IZM 血量产出：hpNext 是**已消耗到的血量阈值游标**（单向递减），
+			//   hpNextInterval 是每段血量（= 初始 hitpoints / healthProductionSegments）。
+			//   两者都是 public 字段（ProduceComponent.cs L68/L70）。
+			_fProdHpNext = prodType.GetField("hpNext", F);
+			_fProdHpNextInterval = prodType.GetField("hpNextInterval", F);
 			// 缠绕海草（TanglekelpComponent）：已抓 / 上限
 			Type tkType = typeof(TanglekelpComponent);
 			_fTkCur = tkType.GetField("currentGrabNum", F);
