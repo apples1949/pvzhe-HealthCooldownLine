@@ -194,7 +194,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// 归"障碍物消失"开关（CatOn(1)）；仅对"障碍物类"生效，避免误报。
 	/// </summary>
 	private void TryCollectGodotTimerLine(TowerDefenseCharacter character,
-		System.Collections.Generic.List<(string Text, Color Color)> lines)
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
 	{
 		try
 		{
@@ -238,7 +238,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				{
 					tag16 = "护盾";
 				}
-				lines.Add((tag16 + " " + left.ToString("0.0") + "s", BusyColor));
+				AddTimer(lines, tag16 + " " + left.ToString("0.0") + "s", BusyColor, wait);
 			}
 		}
 		catch { }
@@ -249,7 +249,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// （游戏当前显示的本体血量文本，如 "1500/1500"）→ 显示"血量 X"。
 	/// </summary>
 	private void TryCollectObstacleHp(TowerDefenseCharacter character, string charName,
-		System.Collections.Generic.List<(string Text, Color Color)> lines)
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
 	{
 		try
 		{
@@ -481,7 +481,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			}
 			if (CatOn(2) && !string.IsNullOrEmpty(hpTxt) && lines.Count < MaxTotalLines)
 			{
-				lines.Add(("血量 " + hpTxt, ReadyColor));
+				AddLine(lines, "血量 " + hpTxt, ReadyColor);
 			}
 		}
 		catch { }
@@ -510,7 +510,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// <summary>等级与加速（加速/攻速/弹数/伤害/动画/加成 buff）。</summary>
 	private bool _showLevel = true;
 	/// <summary>
-	/// ★ v1.19.0「只显示 ≥5 秒」总过滤（用户要求"不显示低于 4.9 秒的计时"）。
+	/// ★ v1.20.0「只显示 ≥5 秒」总过滤 —— **按计时器的总时长判定**（用户 2026-10-06 明确）。
 	///
 	/// **优先级仅次于总开关**：总开关关闭 ⇒ 一行都不显示；本开关打开 ⇒ 在已通过
 	/// 各类开关的行里，再滤掉低于阈值的秒数。UI 上放在第 2 列**总开关的下一行**。
@@ -970,7 +970,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			// ★ 收集式显示（v1.7.0）：一个角色可以有**多行**数值——例：阳光菇=长大+阳光、
 			//   核弹磁力菇=装填+消化、僵尸大嘴花=生成+咀嚼。每行独立 Label（颜色可不同），
 			//   不再"命中即独占返回"。
-			var lines = new System.Collections.Generic.List<(string Text, Color Color)>();
+			var lines = new System.Collections.Generic.List<(string Text, Color Color, double Total)>();
 
 			// 诊断（v1.8.1）：角色一旦出现"变换异常"（负缩放/旋转/斜切——魅惑僵尸等翻转角色），
 			//   首次遇到就打一条完整变换信息 —— 用于定位"文字镜像"的真实实现方式。
@@ -1015,22 +1015,26 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				TryCollectInfo(components, character, SafeCharName(character), lines);
 			}
 
-			// ★ v1.19.0：「只显示 ≥5 秒」过滤（用户要求"不显示低于 4.9 秒的计时"）。
-			//   **唯一的过滤点**，放在这里的好处：
-			//     · 收集端一行都不用改（29 处 lines.Add 全部自动受控）；
-			//     · 全部被滤掉时会走下面的 lines.Count == 0 分支 ⇒ 自动收起面板，
-			//       不会留一个空白框。
-			//   ⚠️ 只过滤"秒"计时行（`12.3s` / `0.0s`），**不过滤**：
-			//     · 毫秒行（`123ms`）—— 那是另一套语义；
-			//     · 非计时行（`血量 300`、`脑光 剩 4/6 次`、`可发射`、`长大 就绪`…）
-			//       —— 它们没有 "数字s" 形态，解析不出来就一律保留。
-			//   ⇒ 阈值判定用**原始数值**，不看四舍五入后的字符串
-			//     （4.86s 会显示成 "4.9s"，但仍然会被滤掉）。
+			// ★ v1.20.0：「只显示 ≥5 秒」过滤 —— **按「总时长」判定**（用户 2026-10-06 明确）。
+			//
+			//   ── 语义（与 v1.19.x 不同）────────────────────────────────────
+			//     旧：显示的**剩余秒数** < 4.9 ⇒ 那一行隐藏
+			//         （长计时器会在最后 4.8 秒突然消失）
+			//     新：该计时器的**总时长** < 4.9 ⇒ **整行从头到尾都不显示**；
+			//         长计时器从满值一路显示到 0.0s。
+			//   例：加农炮装填 15s（总 15 ≥ 4.9）⇒ 显示 15.0 → 0.0；
+			//       某个 3 秒的小冷却（总 3 < 4.9）⇒ 从头到尾都不出现在屏幕上。
+			//
+			//   ── 怎么拿到总时长 ───────────────────────────────────────────
+			//     每行第三个字段 `Total`：由 `AddTimer(lines, 文本, 颜色, 总时长)` 写入；
+			//     非计时行走 `AddLine(...)` ⇒ Total = 0 ⇒ **永不参与过滤**。
+			//     （不再靠解析显示文本里的秒数 —— 那只能得到"剩余"，拿不到"总时长"。）
 			if (_onlyLongTimers)
 			{
 				for (int fi = lines.Count - 1; fi >= 0; fi--)
 				{
-					if (IsShortTimerText(lines[fi].Text))
+					double tot = lines[fi].Total;
+					if (tot > 0.0 && tot < ShortTimerThresholdSeconds)
 					{
 						lines.RemoveAt(fi);
 					}
@@ -1062,7 +1066,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	///   · 位置基准不变：第一行仍贴血条 HP 行上方（-38），更多行向上生长。
 	/// </summary>
 	private void ShowLines(TowerDefenseCharacter character,
-		System.Collections.Generic.List<(string Text, Color Color)> lines)
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
 	{
 		Label[] labels = EnsureOwnLines(character);
 		if (labels == null)
@@ -1229,7 +1233,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// 判据是"字段存不存在"（沿类型链找），不是角色名单——以后新增坑洞变体自动覆盖。
 	/// </summary>
 	private void TryCollectCraterInfo(TowerDefenseCharacter character,
-		System.Collections.Generic.List<(string Text, Color Color)> lines)
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
 	{
 		try
 		{
@@ -1278,7 +1282,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			}
 			if (CatOn(1) && lines.Count < MaxTotalLines)
 			{
-				lines.Add(("消失 " + remain.ToString("0.0") + "s", BusyColor));
+				AddTimer(lines, "消失 " + remain.ToString("0.0") + "s", BusyColor, total);
 			}
 		}
 		catch { }
@@ -1341,7 +1345,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// 不再"命中即独占"。顺序即显示顺序（从上到下）。
 	/// </summary>
 	private void TryCollectInfo(ComponentManager cm, TowerDefenseCharacter character,
-		string charName, System.Collections.Generic.List<(string Text, Color Color)> lines)
+		string charName, System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
 	{
 		if (!EnsureReflection())
 		{
@@ -1375,11 +1379,11 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				{
 					if (armArmed)
 					{
-						lines.Add(("可发射", ReadyColor));
+						AddLine(lines, "可发射", ReadyColor);
 					}
 					else
 					{
-						lines.Add(("充能 " + armIron + "/" + armMax, BusyColor));
+						AddLine(lines, "充能 " + armIron + "/" + armMax, BusyColor);
 					}
 				}
 			}
@@ -1397,7 +1401,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				if (TryGetRemaining(cannon, out remain))
 				{
 					_dbgRunning++;
-					lines.Add(("装填 " + remain.ToString("0.0") + "s", BusyColor));
+					AddTimer(lines, "装填 " + remain.ToString("0.0") + "s", BusyColor, CannonRestTotal(cannon));
 				}
 				else if (!armRole)
 				{
@@ -1409,7 +1413,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					try { canFire15 = cannon.CanFire(); } catch { }
 					if (canFire15)
 					{
-						lines.Add(("装填 就绪", ReadyColor));
+						AddLine(lines, "装填 就绪", ReadyColor);
 					}
 				}
 			}
@@ -1434,7 +1438,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				System.Collections.IDictionary curDic = curObj as System.Collections.IDictionary;
 				if (runDic != null && waitDic != null)
 				{
-					var running = new System.Collections.Generic.List<(string Key, double Rem)>();
+					var running = new System.Collections.Generic.List<(string Key, double Rem, double Total)>();
 					foreach (System.Collections.DictionaryEntry e in runDic)
 					{
 						string key = (e.Key != null) ? e.Key.ToString() : null;
@@ -1462,7 +1466,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 						}
 						if (on && rem > 0)
 						{
-							running.Add((key, rem));
+							running.Add((key, rem, w));
 						}
 					}
 					int timerAdded = 0;
@@ -1479,8 +1483,8 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 						{
 							continue;
 						}
-						lines.Add((TimerLabel(running[i].Key) + " "
-							+ running[i].Rem.ToString("0.0") + "s", BusyColor));
+						AddTimer(lines, TimerLabel(running[i].Key) + " "
+							+ running[i].Rem.ToString("0.0") + "s", BusyColor, running[i].Total);
 						timerAdded++;
 					}
 				}
@@ -1535,7 +1539,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					}
 					if (CatOn(8) && ct > 0 && lines.Count < MaxTotalLines)
 					{
-						lines.Add(("咀嚼 " + remC.ToString("0.0") + "s", BusyColor));
+						AddTimer(lines, "咀嚼 " + remC.ToString("0.0") + "s", BusyColor, ct);
 					}
 				}
 			}
@@ -1649,7 +1653,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				}
 				if (CatOn(6) && growing && remG > 0 && lines.Count < MaxTotalLines)
 				{
-					lines.Add(("长大 " + remG.ToString("0.0") + "s", BusyColor));
+					AddTimer(lines, "长大 " + remG.ToString("0.0") + "s", BusyColor, total);
 				}
 			}
 		}
@@ -1677,7 +1681,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				}
 				if (EnablePeriodEvent && st > 0 && remP > 0 && lines.Count < MaxTotalLines)
 				{
-					lines.Add(("触发 " + remP.ToString("0.0") + "s", BusyColor));
+					AddTimer(lines, "触发 " + remP.ToString("0.0") + "s", BusyColor, st);
 				}
 			}
 		}
@@ -1712,7 +1716,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				}
 				if (CatOn(8) && bt > 0 && remM > 0 && busy && lines.Count < MaxTotalLines)
 				{
-					lines.Add(("消化 " + remM.ToString("0.0") + "s", BusyColor));
+					AddTimer(lines, "消化 " + remM.ToString("0.0") + "s", BusyColor, bt);
 				}
 			}
 		}
@@ -1758,7 +1762,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				if (CatOn(6) && interval > 0 && remC > 0 && lines.Count < MaxTotalLines)
 				{
 					// v1.8.1：带上充能等级（用户要的"等级显示"）
-					lines.Add(("充能" + lv + " " + remC.ToString("0.0") + "s", BusyColor));
+					AddTimer(lines, "充能" + lv + " " + remC.ToString("0.0") + "s", BusyColor, interval);
 				}
 			}
 			else
@@ -1803,7 +1807,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					if (CatOn(6) && interval2 > 0 && rem2 > 0 && lines.Count < MaxTotalLines)
 					{
 						// v1.8.1：带上充能等级（"充能0 29.7s" = 等级0、距下一级 29.7s）
-						lines.Add(("充能" + lv2 + " " + rem2.ToString("0.0") + "s", BusyColor));
+						AddTimer(lines, "充能" + lv2 + " " + rem2.ToString("0.0") + "s", BusyColor, interval2);
 					}
 				}
 			}
@@ -1874,7 +1878,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				}
 				if (CatOn(7) && interval > 0 && remS > 0 && lines.Count < MaxTotalLines)
 				{
-					lines.Add((label + " " + remS.ToString("0.0") + "s", BusyColor));
+					AddTimer(lines, label + " " + remS.ToString("0.0") + "s", BusyColor, interval);
 				}
 			}
 		}
@@ -2033,7 +2037,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 							}
 							catch { }
 							Color c = (left > 0) ? ReadyColor : DisabledColor;
-							lines.Add((prodLabel + " 剩 " + left + "/" + total + " 次", c));
+							AddLine(lines, prodLabel + " 剩 " + left + "/" + total + " 次", c);
 						}
 						}   // ← 结束 step/segments 防御性判断
 					}
@@ -2121,7 +2125,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				if (CatOn(7) && lines.Count < MaxTotalLines)
 				{
 					Color c2 = (left2 > 0) ? ReadyColor : DisabledColor;
-					lines.Add((label2 + " 剩 " + left2 + "/" + InlineSegments + " 次", c2));
+					AddLine(lines, label2 + " 剩 " + left2 + "/" + InlineSegments + " 次", c2);
 				}
 			}
 		}
@@ -2223,15 +2227,14 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 
 				if (CatOn(0) && lines.Count < MaxTotalLines)
 				{
-					lines.Add(("装填 " + jn + "/" + jmax,
-						(jn > 0) ? ReadyColor : DisabledColor));
+					AddLine(lines, "装填 " + jn + "/" + jmax, (jn > 0) ? ReadyColor : DisabledColor);
 				}
 				if (jn > 0 && need > 0.0 && soonest != double.MaxValue
 					&& CatOn(0) && lines.Count < MaxTotalLines)
 				{
 					double r = soonest;
 					if (r < 0.0) { r = 0.0; }
-					lines.Add(("发射 " + r.ToString("0.0") + "s", BusyColor));
+					AddTimer(lines, "发射 " + r.ToString("0.0") + "s", BusyColor, need);
 				}
 			}
 		}
@@ -2251,11 +2254,11 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					bool running = (run is bool bb) && bb;
 					if (running && r > 0)
 					{
-						lines.Add(("准备 " + r.ToString("0.0") + "s", BusyColor));
+						AddTimer(lines, "准备 " + r.ToString("0.0") + "s", BusyColor, PotatoReadyTotal(potato));
 					}
 					else if (!running)
 					{
-						lines.Add(("准备 就绪", ReadyColor));
+						AddLine(lines, "准备 就绪", ReadyColor);
 					}
 				}
 			}
@@ -2284,7 +2287,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					if (maxLeft > 0)
 					{
 						int left = maxLeft - Convert.ToInt32(hit);
-						lines.Add(("剩余 " + left + " 发", (left > 0) ? ReadyColor : DisabledColor));
+						AddLine(lines, "剩余 " + left + " 发", (left > 0) ? ReadyColor : DisabledColor);
 					}
 					else if (_bowlProbed.Add(charName ?? "?"))
 					{
@@ -2313,8 +2316,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				{
 					int left = Convert.ToInt32(cur);
 					int total = Convert.ToInt32(max);
-					lines.Add(((total > 0) ? ("剩弹 " + left + "/" + total) : ("剩弹 " + left),
-						(left > 0) ? ReadyColor : DisabledColor));
+					AddLine(lines, (total > 0) ? ("剩弹 " + left + "/" + total) : ("剩弹 " + left), (left > 0) ? ReadyColor : DisabledColor);
 				}
 			}
 			else if (cat == null && _catProbed.Add(charName ?? "?")
@@ -2347,8 +2349,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					}
 					if (tkM > 0)
 					{
-						lines.Add(("抓取 " + tkC + "/" + tkM,
-							(tkC < tkM) ? ReadyColor : DisabledColor));
+						AddLine(lines, "抓取 " + tkC + "/" + tkM, (tkC < tkM) ? ReadyColor : DisabledColor);
 					}
 				}
 			}
@@ -2384,7 +2385,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				if (CatOn(8) && gbRun && dur > 0 && remainG > 0 && remainG <= dur
 					&& lines.Count < MaxTotalLines)
 				{
-					lines.Add(("啃碑 " + remainG.ToString("0.0") + "s", BusyColor));
+					AddTimer(lines, "啃碑 " + remainG.ToString("0.0") + "s", BusyColor, dur);
 				}
 			}
 		}
@@ -2434,7 +2435,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 						string lvTxt = (lvMax > 0)
 							? ("等级 " + lv + "/" + lvMax)
 							: ("等级 " + lv);
-						lines.Add((lvTxt, ReadyColor));
+						AddLine(lines, lvTxt, ReadyColor);
 					}
 				}
 			}
@@ -2672,11 +2673,11 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 								double rr = (dmBase > 0.0001) ? (dm / dmBase) : 1.0;
 								if (rr > 1.0001)
 								{
-									lines.Add(("伤害 +" + ((rr - 1.0) * 100.0).ToString("0") + "%", ReadyColor));
+									AddLine(lines, "伤害 +" + ((rr - 1.0) * 100.0).ToString("0") + "%", ReadyColor);
 								}
 								else if (rr < 0.9999)
 								{
-									lines.Add(("伤害 -" + ((1.0 - rr) * 100.0).ToString("0") + "%", DisabledColor));
+									AddLine(lines, "伤害 -" + ((1.0 - rr) * 100.0).ToString("0") + "%", DisabledColor);
 								}
 							}
 						}
@@ -2702,11 +2703,11 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				//   恢复：`spd` 只来自 buff 的 timeScaleValue / FireComponent.timeScale。
 				if (spd > 1.0001)
 				{
-					lines.Add(("加速 +" + ((spd - 1.0) * 100.0).ToString("0") + "%", ReadyColor));
+					AddLine(lines, "加速 +" + ((spd - 1.0) * 100.0).ToString("0") + "%", ReadyColor);
 				}
 				else if (spd < 0.9999)
 				{
-					lines.Add(("加速 -" + ((1.0 - spd) * 100.0).ToString("0") + "%", DisabledColor));
+					AddLine(lines, "加速 -" + ((1.0 - spd) * 100.0).ToString("0") + "%", DisabledColor);
 				}
 				// (1.2) 攻速：**标称间隔 / 当前间隔**（>1 = 比标称更快，即被加成）——
 				//   猫窝"使种在猫窝内的猫尾草类植物攻速翻倍"的落点就在这里
@@ -2716,7 +2717,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					double ratioF = lastFireBase / lastFireCur;
 					if (ratioF > 1.0001)
 					{
-						lines.Add(("攻速 +" + ((ratioF - 1.0) * 100.0).ToString("0") + "%", ReadyColor));
+						AddLine(lines, "攻速 +" + ((ratioF - 1.0) * 100.0).ToString("0") + "%", ReadyColor);
 					}
 				}
 				// (1.4) ★ **猫窝加速**（v1.15.0 由新解包源码**定案**）——
@@ -2736,7 +2737,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 						try { hp15 = (fc15 != null) && fc15.hasCatPumpkin; } catch { }
 						if (hp15 && lines.Count < MaxTotalLines)
 						{
-							lines.Add(("猫窝加速 ×2", ReadyColor));
+							AddLine(lines, "猫窝加速 ×2", ReadyColor);
 						}
 						if (_obstacleHpReported.Add("CAT|" + (charName ?? "?")))
 						{
@@ -2800,7 +2801,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 							+ " 当前timeScale=" + lastTs.ToString("0.###")
 							+ " → 显示\"" + valStr + "\"");
 					}
-					lines.Add((BoostBuffName(bkey) + "加成" + valStr, ReadyColor));
+					AddLine(lines, BoostBuffName(bkey) + "加成" + valStr, ReadyColor);
 				}
 				// (2) 弹数/攻速：以种下基线对比（天生差异不算）
 				double[] bv2;
@@ -2810,7 +2811,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					int fnDelta = lastFireNum - (int)bv2[3];
 					if (fnDelta > 0)
 					{
-						lines.Add(("弹数 +" + fnDelta, ReadyColor));
+						AddLine(lines, "弹数 +" + fnDelta, ReadyColor);
 					}
 					// （攻速已由 (1.2) 的"标称 vs 当前"通道处理——它才是猫窝类加成的落点）
 				}
@@ -2862,11 +2863,11 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 						{
 							if (on2 && rem2 > 0)
 							{
-								lines.Add(("点击 " + rem2.ToString("0.0") + "s", BusyColor));
+								AddTimer(lines, "点击 " + rem2.ToString("0.0") + "s", BusyColor, w2);
 							}
 							else if (!on2)
 							{
-								lines.Add(("可点击", ReadyColor));
+								AddLine(lines, "可点击", ReadyColor);
 							}
 						}
 					}
@@ -2994,7 +2995,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		{
 			Label longSub = new Label();
 			longSub.Name = OnlyLongCheckBoxName + "Sub";
-			longSub.Text = "— 低于 4.9 秒的计时不显示 —";
+			longSub.Text = "— 总时长低于 4.9 秒的计时不显示 —";
 			longSub.HorizontalAlignment = HorizontalAlignment.Center;
 			longSub.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 			longSub.CustomMinimumSize = new Vector2(230f, 0f);
@@ -3276,7 +3277,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		{
 			_onlyLongTimers = on;
 			SaveEnabled();
-			Info("开关[只显示 ≥5 秒] → " + (on ? "开（低于 " + ShortTimerThresholdSeconds.ToString("0.#") + " 秒的计时行不显示）" : "关"));
+			Info("开关[只显示 ≥5 秒] → " + (on ? ("开（总时长低于 " + ShortTimerThresholdSeconds.ToString("0.#") + " 秒的计时器整行不显示）") : "关"));
 		}
 		catch (Exception ex)
 		{
@@ -3410,63 +3411,83 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	}
 
 	/// <summary>
-	/// 该行是不是"低于阈值秒数"的计时行（供「只显示 ≥5 秒」开关使用）。
-	///
-	/// 判定规则（刻意保守，**宁可漏滤也不误滤**）：
-	///   · 行尾必须是 `s`（秒）或 `s` + 空格/括号后缀；
-	///     行尾是 `ms` 的一律**不算**（毫秒是另一套语义，本项目已有那种行）；
-	///   · 从 s 往前取连续数字与小数点，解析成秒数；
-	///   · 解析不出数字（`可发射`/`血量 300`/`脑光 剩 4/6 次`/`长大 就绪`…）
-	///     ⇒ **保留**，不参与过滤。
-	///
-	/// ⚠️ 用 `CultureInfo.InvariantCulture` 解析：本工程文本一律用
-	///   `ToString("0.0")` 生成，不受系统区域影响；但解析端若用当前区域，
-	///   在逗号做小数点的系统上会失败（本项目是中文 Windows，`.` 正常，仍然显式指定更稳）。
+	/// 追加一行**非计时**信息（计数 / 状态 / 百分比…）。
+	/// `Total = 0` ⇒ **永不参与**「只显示 ≥5 秒」过滤。
 	/// </summary>
-	private static bool IsShortTimerText(string text)
+	private static void AddLine(
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> ls,
+		string text, Color color)
 	{
-		if (string.IsNullOrEmpty(text))
+		ls.Add((text, color, 0.0));
+	}
+
+	/// <summary>
+	/// 追加一行**计时**信息。`total` = 该计时器的**总时长**（秒）。
+	///
+	/// 「只显示 ≥5 秒」开关打开时，`total &lt; 4.9` 的行**整行不显示**
+	/// （不是"剩到 4.9 才隐藏"，而是从头到尾都不出现）；
+	/// 总时长 ≥ 4.9 的行则从满值一路显示到 0。
+	/// 取不到总时长时传 0 ⇒ 该行不参与过滤（宁可显示，也不误藏）。
+	/// </summary>
+	private static void AddTimer(
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> ls,
+		string text, Color color, double total)
+	{
+		ls.Add((text, color, total));
+	}
+
+	/// <summary>
+	/// 加农炮装填的**总时长** = `CannonComponent.restTime`（public 字段，装填冷却配置值）。
+	/// 取不到返回 0 ⇒ 该行不参与「总时长」过滤。
+	/// </summary>
+	private static double CannonRestTotal(object cannon)
+	{
+		try
 		{
-			return false;
-		}
-		int s = text.LastIndexOf('s');
-		if (s < 0)
-		{
-			return false;
-		}
-		// 排除 ms
-		if (s >= 1 && (text[s - 1] == 'm' || text[s - 1] == 'M'))
-		{
-			return false;
-		}
-		// s 之后只允许空白或右括号（例如 "阳光 12.3s " / "计时(12.3s)"）
-		for (int i = s + 1; i < text.Length; i++)
-		{
-			char c = text[i];
-			if (!char.IsWhiteSpace(c) && c != ')' && c != '）')
+			if (cannon == null)
 			{
-				return false;
+				return 0.0;
+			}
+			FieldInfo f = typeof(CannonComponent).GetField("restTime",
+				BindingFlags.Public | BindingFlags.Instance);
+			if (f != null)
+			{
+				object v = f.GetValue(cannon);
+				if (v != null)
+				{
+					return Convert.ToDouble(v);
+				}
 			}
 		}
-		// 从 s 往前取数字与小数点
-		int e = s - 1;
-		int b = e;
-		while (b >= 0 && (char.IsDigit(text[b]) || text[b] == '.'))
+		catch { }
+		return 0.0;
+	}
+
+	/// <summary>
+	/// 土豆雷「准备」的**总时长** = `PotatoComponent.readyTime`（public float，默认 15s）。
+	/// 取不到返回 0 ⇒ 不参与过滤。
+	/// </summary>
+	private static double PotatoReadyTotal(object potato)
+	{
+		try
 		{
-			b--;
+			if (potato == null)
+			{
+				return 0.0;
+			}
+			FieldInfo f = typeof(PotatoComponent).GetField("readyTime",
+				BindingFlags.Public | BindingFlags.Instance);
+			if (f != null)
+			{
+				object v = f.GetValue(potato);
+				if (v != null)
+				{
+					return Convert.ToDouble(v);
+				}
+			}
 		}
-		if (b == e)
-		{
-			return false;   // s 前没有数字
-		}
-		string num = text.Substring(b + 1, e - b);
-		double v;
-		if (!double.TryParse(num, System.Globalization.NumberStyles.Float,
-			System.Globalization.CultureInfo.InvariantCulture, out v))
-		{
-			return false;   // 解析失败 ⇒ 保留
-		}
-		return v < ShortTimerThresholdSeconds;
+		catch { }
+		return 0.0;
 	}
 
 	private bool CatOn(int cat)
