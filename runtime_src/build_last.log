@@ -2,11 +2,16 @@
 0 个警告
     0 个错误
 
-已用时间 00:00:00.99
+已用时间 00:00:01.06
 [compile] OK
 [package] RC=0
+[护栏0] Runtime/ModAssembly.dll 与最新编译产物不一致 → 自动用编译产物覆盖
+       编译产物 bin/Release: b1fe5020da58c3815a070431e677f6f0
+       Runtime/ 原值      : 764ef99330bf4412747f9f3cbd6549e6
+       已更新 Runtime/ModAssembly.dll -> b1fe5020da58c3815a070431e677f6f0
 OK -> C:\Users\apples1949\Desktop\植物大战僵尸杂交重制版\mods\HealthCooldownLine\dist\HealthCooldownLine.pmod
-  大小: 30941 字节
+  大小: 31400 字节
   内容: ['mod.json', 'Runtime/ModAssembly.dll']
-  包内 DLL md5: 764ef99330bf4412747f9f3cbd6549e6 （应与 bin/Release 及装机包一致）
-[install] C:\Users\apples1949\AppData\Roaming\Godot\app_userdata\植物大战僵尸杂交版\Mods\HealthCooldownLine.pmod (30941 B)
+  包内 DLL md5: b1fe5020da58c3815a070431e677f6f0 （应与 bin/Release 及装机包一致）
+[install] C:\Users\apples1949\AppData\Roaming\Godot\app_userdata\植物大战僵尸杂交版\Mods\HealthCooldownLine.pmod (31400 B)
+[cache] move rc=0 1 dir(s) moved.

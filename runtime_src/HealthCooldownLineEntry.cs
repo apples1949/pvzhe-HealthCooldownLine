@@ -2167,15 +2167,12 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				int jn = 0;
 				try
 				{
-					object o = fJala.GetValue(character);
-					if (o is Godot.Collections.Array ga)
-					{
-						jn = ga.Count;
-					}
-					else if (o is System.Collections.ICollection col)
-					{
-						jn = col.Count;
-					}
+					// ★ 必须用兼容 Array<T> 的读法：`jalaList` 是
+					//   `Godot.Collections.Array<TowerDefensePacketConfig>`，
+					//   而 Array<T> 与 Array **没有继承关系** ⇒ 原先写的
+					//   `is Godot.Collections.Array` 恒 false ⇒ jn 永远为 0
+					//   ⇒ 面板恒显示「装填 0/4」（用户反馈"不会正常计数"的根因）。
+					jn = GodotArrayCount(fJala.GetValue(character));
 				}
 				catch { }
 				int jmax = 4;
@@ -2203,15 +2200,19 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 				{
 					FieldInfo fT = jt.GetField("timerList",
 						BindingFlags.Public | BindingFlags.Instance);
-					if (fT != null && fT.GetValue(character) is Godot.Collections.Array ta)
+					if (fT != null)
 					{
-						int lim = (jn < ta.Count) ? jn : ta.Count;
-						for (int i = 0; i < lim; i++)
+						// `timerList` 是 `Array<double>` —— 同样不能用非泛型 Array 通道，
+						// 走与 TryReadFloatArray 同一套「泛型精确匹配」策略。
+						System.Collections.Generic.List<double> tvals;
+						if (TryReadDoubleArray(fT.GetValue(character), out tvals) && tvals != null)
 						{
-							double t = 0.0;
-							try { t = ta[i].AsDouble(); } catch { }
-							double rem = need - t;
-							if (rem < soonest) { soonest = rem; }
+							int lim = (jn < tvals.Count) ? jn : tvals.Count;
+							for (int i = 0; i < lim; i++)
+							{
+								double rem = need - tvals[i];
+								if (rem < soonest) { soonest = rem; }
+							}
 						}
 					}
 				}
@@ -3723,6 +3724,134 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 					else if (o is Godot.Variant v)
 					{
 						values.Add((float)v);
+					}
+					else if (o != null)
+					{
+						values.Add(Convert.ToDouble(o));
+					}
+				}
+				if (values.Count > 0)
+				{
+					return true;
+				}
+			}
+		}
+		catch { }
+		values = null;
+		return false;
+	}
+
+	/// <summary>
+	/// 读 Godot 数组的**元素个数**，必须兼容 `Godot.Collections.Array&lt;T&gt;`。
+	///
+	/// ⚠️⚠️ 本项目的**反复踩过的坑**（v1.7.1~v1.7.4 与 v1.19.3 两次因此失败，2026-09-26 定案）：
+	///   `Godot.Collections.Array&lt;T&gt;` 的基类是 **Object**，
+	///   与 `Godot.Collections.Array` **没有任何继承关系**
+	///   ⇒ `o is Godot.Collections.Array` **恒为 false**、`as` **恒为 null**，
+	///     而且**不报错**（所以极难发现：表现只是"数值一直是 0"）。
+	///
+	/// 正确通道（按可靠性排序，本函数依次尝试）：
+	///   ① 非泛型 `Godot.Collections.Array`（游戏里也有这种字段）；
+	///   ② **反射读 `Count` 属性** —— `Array&lt;T&gt;` 与 `Array` 都有，
+	///      且**不需要知道 T**（这是"泛型精确匹配"之外最省事的通用办法）；
+	///   ③ 非泛型 `ICollection.Count`；
+	///   ④ 兜底：非泛型 `IEnumerable` 逐元素数。
+	/// </summary>
+	private static int GodotArrayCount(object obj)
+	{
+		try
+		{
+			if (obj == null)
+			{
+				return 0;
+			}
+			Godot.Collections.Array ga = obj as Godot.Collections.Array;
+			if (ga != null)
+			{
+				return ga.Count;
+			}
+			PropertyInfo pc = obj.GetType().GetProperty("Count",
+				BindingFlags.Public | BindingFlags.Instance);
+			if (pc != null)
+			{
+				object v = pc.GetValue(obj);
+				if (v is int n)
+				{
+					return n;
+				}
+			}
+			System.Collections.ICollection col = obj as System.Collections.ICollection;
+			if (col != null)
+			{
+				return col.Count;
+			}
+			System.Collections.IEnumerable seq = obj as System.Collections.IEnumerable;
+			if (seq != null)
+			{
+				int c = 0;
+				foreach (object unused in seq)
+				{
+					c++;
+				}
+				return c;
+			}
+		}
+		catch { }
+		return 0;
+	}
+
+	/// <summary>
+	/// 读 Godot 的 **double** 数组（`Array&lt;double&gt;` / IList&lt;double&gt; / 非泛型枚举）。
+	/// 与 <see cref="TryReadFloatArray"/> 同一套兼容策略 ——
+	/// 关键是**泛型 `as` 精确匹配**，`Array&lt;T&gt;` 不能走非泛型 `Array` 通道。
+	/// </summary>
+	private static bool TryReadDoubleArray(object obj, out System.Collections.Generic.List<double> values)
+	{
+		values = null;
+		try
+		{
+			if (obj == null)
+			{
+				return false;
+			}
+			Godot.Collections.Array<double> gD = obj as Godot.Collections.Array<double>;
+			if (gD != null && gD.Count > 0)
+			{
+				values = new System.Collections.Generic.List<double>(gD.Count);
+				for (int i = 0; i < gD.Count; i++)
+				{
+					values.Add(gD[i]);
+				}
+				return true;
+			}
+			System.Collections.Generic.IList<double> lD
+				= obj as System.Collections.Generic.IList<double>;
+			if (lD != null && lD.Count > 0)
+			{
+				values = new System.Collections.Generic.List<double>(lD.Count);
+				for (int i = 0; i < lD.Count; i++)
+				{
+					values.Add(lD[i]);
+				}
+				return true;
+			}
+			System.Collections.IEnumerable seq = obj as System.Collections.IEnumerable;
+			if (seq != null)
+			{
+				values = new System.Collections.Generic.List<double>();
+				foreach (object o in seq)
+				{
+					if (o is double d)
+					{
+						values.Add(d);
+					}
+					else if (o is float f)
+					{
+						values.Add(f);
+					}
+					else if (o is Godot.Variant v)
+					{
+						values.Add(v.AsDouble());
 					}
 					else if (o != null)
 					{
