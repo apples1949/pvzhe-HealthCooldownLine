@@ -2,21 +2,385 @@
   "schemaVersion": 2,
   "id": "healthcooldowndisplay",
   "name": "血条·装填倒计时",
-  "version": "1.20.1",
-  "author": "本地",
-  "description": "显示角色冷却、装填进度、障碍物血量和种植冷却，支持分类开关。v1.20.1：修复泡椒罐子「装填 N/4」恒显示 0/4、且「发射 X.Xs」不出现 —— 根因是 `jalaList`/`timerList` 是 `Godot.Collections.Array<T>`，它与非泛型 `Array` **没有继承关系**，原先 `is Godot.Collections.Array` 恒 false（同项目 v1.7.1 踩过的同一个坑）；现改走「反射读 Count + 泛型 as 精确匹配」。v1.20.0：「只显示 ≥5 秒」改为按计时器的【总时长】判定 —— 总时长低于 4.9 秒的计时器整行不显示（此前是「剩余时间低于 4.9 秒才隐藏」，长计时器会在最后几秒突然消失）；总时长 ≥ 4.9 秒的计时器从满值一路显示到 0。v1.19.3：新增泡椒罐子（JalaVase）「装填 N/4」+「发射 X.Xs」（该植物状态全在角色类的 jalaList/timerList/timeNeed 字段上，之前一条都没命中所以不显示）。v1.19.2：修复剩余次数显示成最大值−1；修复伪装向日葵重复显示。v1.19.1：我是僵尸下不再显示假的阳光生产倒计时。v1.19.0：「只显示 ≥5 秒」开关。",
+  "version": "1.21.2",
+  "author": "apples1949",
+  "description": "显示角色冷却、装填进度、障碍物血量和种植冷却，支持分类开关。",
+  "playInstructions": "在僵尸血条上直接显示冷却进度。\n1. 各项开关（含原生血条设置）都在：选项 → Mod 管理 → 血条冷却显示 → 配置。\n2. 可设置快捷键一键开关总显示。\n3. 优先级：总开关 > 原生血条设置 > 5 秒显示。",
   "dependencies": [],
   "conflicts": [],
   "provides": {},
   "overrides": {},
   "scripts": [],
+  "settings": [
+    {
+      "key": "enabled",
+      "type": "bool",
+      "label": "显示冷却倒计时",
+      "group": "显示内容",
+      "description": "关闭后整个血条冷却显示都不工作。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "only_long_timers",
+      "type": "bool",
+      "label": "只显示 ≥5 秒的计时",
+      "group": "显示内容",
+      "description": "开启后，总时长低于 5 秒的短计时器整行不显示（减少刷屏）。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": false
+    },
+    {
+      "key": "showLoad",
+      "type": "bool",
+      "label": "装填与核能",
+      "group": "显示内容",
+      "description": "加农炮装填、核弹磁力菇核能充能。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showObstacle",
+      "type": "bool",
+      "label": "障碍物消失",
+      "group": "显示内容",
+      "description": "坑洞/墓碑/定时炸弹/定时核弹/大火的计时显示。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showObstacleHp",
+      "type": "bool",
+      "label": "障碍物血量",
+      "group": "显示内容",
+      "description": "障碍物的血量文本。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showCardCd",
+      "type": "bool",
+      "label": "选卡栏种植 CD",
+      "group": "显示内容",
+      "description": "选卡栏卡片的种植冷却。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showSpawn",
+      "type": "bool",
+      "label": "生成计时",
+      "group": "显示内容",
+      "description": "植物/僵尸版的「生成 X.Xs」。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showOtherTimer",
+      "type": "bool",
+      "label": "其他角色计时器",
+      "group": "显示内容",
+      "description": "除障碍物与 Spawn 外的命名计时器。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showGrowth",
+      "type": "bool",
+      "label": "成长与充能",
+      "group": "显示内容",
+      "description": "长大、蓄能咖啡豆充能等成长类计时。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showProduce",
+      "type": "bool",
+      "label": "产出倒计时",
+      "group": "显示内容",
+      "description": "阳光/金币/卡包等产出类计时。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showCombat",
+      "type": "bool",
+      "label": "战斗辅助",
+      "group": "显示内容",
+      "description": "咀嚼、消化、准备、篮球、投石车、啃碑等战斗辅助计时。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "showLevel",
+      "type": "bool",
+      "label": "等级与加速",
+      "group": "显示内容",
+      "description": "加速/攻速/弹数/伤害/动画/加成 buff 显示。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": true
+    },
+    {
+      "key": "aboutChangelog",
+      "type": "text",
+      "label": "更新历史",
+      "group": "关于",
+      "content": "v1.21.2 · 2026-10-11\n新增：魅惑补丁（用户称魅惑菇王）专属显示——「生成僵尸 X.Xs」（30s 周期）+「可啃 N 次」（最多 3 次，啃满自毁）。\nv1.21.1 · 2026-10-11\n录制面板修复；只显示≥5秒开关移位。\nv1.21.0 · 2026-10-11\n恢复 5 个显示开关；魅惑僵尸生成阳光 CD。\n（更早略）"
+    },
+    {
+      "key": "toggleHotkey",
+      "type": "enum",
+      "label": "总开关快捷键",
+      "group": "功能",
+      "default": "",
+      "description": "一键开关全部 CD 显示（默认无绑定）。下拉选键，或用配置页「录制快捷键」按钮录入。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "options": [
+        {
+          "value": "",
+          "label": "（无绑定）"
+        },
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "4",
+          "label": "4"
+        },
+        {
+          "value": "5",
+          "label": "5"
+        },
+        {
+          "value": "6",
+          "label": "6"
+        },
+        {
+          "value": "7",
+          "label": "7"
+        },
+        {
+          "value": "8",
+          "label": "8"
+        },
+        {
+          "value": "9",
+          "label": "9"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F10",
+          "label": "F10"
+        },
+        {
+          "value": "F11",
+          "label": "F11"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "VolumeUp",
+          "label": "手机音量+"
+        },
+        {
+          "value": "VolumeDown",
+          "label": "手机音量-"
+        }
+      ]
+    },
+    {
+      "key": "enableLog",
+      "type": "bool",
+      "label": "输出诊断日志",
+      "group": "诊断",
+      "description": "排查问题时打开，会把运行状态写进 godot.log。平时关掉，不刷日志。",
+      "applyMode": "immediate",
+      "affectsGameplay": false,
+      "default": false
+    },
+    {
+      "key": "aboutAuthor",
+      "type": "richtext",
+      "label": "关于作者",
+      "group": "关于",
+      "content": "血条冷却显示 v1.21.0 · 作者：apples1949\n\n[url=https://space.bilibili.com/186773722]B 站空间[/url]\n[url=https://apples1949.lanzouc.com/b007uuknqd]蓝奏云下载（密码 762b）[/url]\n\n本模组为玩家自制 Mod，与《植物大战僵尸杂交重制版》官方无隶属关系。\n赞助：微信扫码支持作者（见下方收款码图片）。"
+    }
+  ],
   "runtimeAssembly": "Runtime/ModAssembly.dll",
   "runtimeEntryType": "HealthCooldownLineEntry",
-  "runtimeApiVersion": 1,
+  "runtimeApiVersion": 3,
   "runtimeAssemblyPolicy": "optional",
   "blueprints": [],
   "translations": [],
   "resources": [
+    "Resources/SponsorQR.png",
     "Runtime/ModAssembly.dll"
   ]
 }

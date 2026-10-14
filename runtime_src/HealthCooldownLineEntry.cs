@@ -38,6 +38,9 @@ using PVZHE.ModEditor.ModSystem;
 /// </summary>
 public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 {
+	// 赞助码注入器（SponsorQrInjector.cs 共享组件）用的包根缓存
+	internal static string SponsorQrRoot = null;
+
 	private const string LogPrefix = "[HealthCooldownLine] ";
 
 	/// <summary>CannonComponent（加农炮）在 ComponentSet 里的 InstanceId。</summary>
@@ -82,6 +85,10 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	private const string OptionRootName = "BattleOption";
 	/// <summary>注入的 CheckBox 节点名（幂等判断用）。</summary>
 	private const string OptionCheckBoxName = "ModCooldownCheckBox";
+		// ★ 2026-10-13：modifyOptionPanel 设置已删除（用户要求：CD 开关直接由设置页按钮控制）
+		private const string KModifyPanel = "modifyOptionPanel";   // 保留常量避免旧代码引用报错
+		/// <summary>是否往游戏的「战斗选项」界面注入本 Mod 的开关（默认开）。</summary>
+		private static bool _modifyOptionPanel = true;
 	/// <summary>「只显示 ≥5 秒」CheckBox 的节点名（v1.19.0）。</summary>
 	private const string OnlyLongCheckBoxName = "ModOnlyLongCheckBox";
 	/// <summary>两列布局的外层水平容器名（幂等判断用）。</summary>
@@ -487,6 +494,12 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		catch { }
 	}
 	/// <summary>开关当前状态（默认开，兼容老用户）。</summary>
+	/// <summary>一键开关 CD 显示总开关的快捷键（配置面板可改，默认 H）。</summary>
+	private const string KToggleHotkey = "toggleHotkey";
+						private Callable _hotkeyTick;
+	private bool _hotkeyPrev;
+	private bool _hotkeyConnected;
+
 	private bool _enabled = true;
 	// ---- 6 类功能独立开关（v1.9.0，默认全开；键名见 FeatureKeys）----
 	/// <summary>装填与核能（加农炮装填、核弹磁力菇核能充能）。</summary>
@@ -779,8 +792,217 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// ⚠️ 接口签名是 <c>void</c>（不是 bool）—— 编译报 CS0738 就是这个。
 	/// 失败靠"抛异常"表达，而抛了会整包回滚，所以这里必须自己吞掉所有异常。
 	/// </summary>
-	public void Initialize(XWModRuntimeContext context)
+	
+	// ============================================================ 配置面板接线
+	// mod.json 声明了 enableLog（bool，默认 false）。老宿主没有 context.Settings 时吞异常返回 false。
+	// 用 Get<object>：宿主把值存成 Dictionary<string, object>，直接 Get<bool> 可能抛 InvalidCastException。
+	private static bool ReadLogSetting(XWModRuntimeContext context)
 	{
+		try
+		{
+			if (context == null) { return false; }
+			object v = context.Settings.Get<object>("enableLog");
+			if (v is bool b) { return b; }
+			if (v is string s && bool.TryParse(s, out bool sb)) { return sb; }
+			if (v is System.Text.Json.JsonElement je)
+			{
+				if (je.ValueKind == System.Text.Json.JsonValueKind.True) { return true; }
+				if (je.ValueKind == System.Text.Json.JsonValueKind.False) { return false; }
+			}
+			return false;
+		}
+		catch { return false; }
+	}
+
+
+	// ============================================================ 配置面板接线（P2-4）
+	//
+	// 7 个开关全部搬到「Mod 配置」面板。策略：**面板值优先，取不到就保留原有
+	// user://HealthCooldownLine.cfg 的值**（老宿主 / 键缺失时不改变既有行为）。
+	// 值可能是 bool / string / JsonElement（宿主存 Dictionary<string, object>），统一稳健转换。
+	private static bool? TryReadSwitch(XWModRuntimeContext context, string key)
+	{
+		try
+		{
+			if (context == null) { return null; }
+			object v = context.Settings.Get<object>(key);
+			if (v is bool b) { return b; }
+			if (v is string s && bool.TryParse(s, out bool sb)) { return sb; }
+			if (v is System.Text.Json.JsonElement je)
+			{
+				if (je.ValueKind == System.Text.Json.JsonValueKind.True) { return true; }
+				if (je.ValueKind == System.Text.Json.JsonValueKind.False) { return false; }
+			}
+			return null;
+		}
+		catch { return null; }
+	}
+
+	/// <summary>读取快捷键字符（取配置字符串的第一个字符，默认 H）。</summary>
+	/// <summary>读「是否修改战斗选项界面」设置（bool，默认开）。</summary>
+	private void ReadModifyPanelSetting(XWModRuntimeContext context)
+	{
+		try
+		{
+			if (context == null) { return; }
+			object v = context.Settings.Get<object>(KModifyPanel);
+			if (v is bool b) { _modifyOptionPanel = b; }
+			else if (v is string s && bool.TryParse(s, out bool sb)) { _modifyOptionPanel = sb; }
+			else if (v is System.Text.Json.JsonElement je
+				&& (je.ValueKind == System.Text.Json.JsonValueKind.True || je.ValueKind == System.Text.Json.JsonValueKind.False))
+			{
+				_modifyOptionPanel = je.GetBoolean();
+			}
+		}
+		catch { }
+	}
+
+	private string ReadHotkey()
+	{
+		try
+		{
+			object v = _context == null ? null : _context.Settings.Get<object>(KToggleHotkey);
+			string s = null;
+			if (v is string str) { s = str; }
+			else if (v is System.Text.Json.JsonElement je && je.ValueKind == System.Text.Json.JsonValueKind.String) { s = je.GetString(); }
+			if (!string.IsNullOrWhiteSpace(s)) { return s.Trim(); }
+		}
+		catch { }
+		return "";
+	}
+
+	/// <summary>
+	/// 快捷键：一键开关"CD 显示总开关"（_enabled）。
+	/// ⚠️ 无源生成器 ⇒ 不能用 _Input，只能在这里轮询 Input.IsKeyPressed + 自记上一帧实现"刚按下"。
+	/// ⚠️ 用独立的一条 process_frame 连接，不动原有主循环（降低风险）。
+	/// </summary>
+	/// <summary>
+	/// 把配置里存的按键串解析成 Godot `Key`。
+	/// ★ 2026-10-13 新增（真机 bug）：原实现取 `key[0]` 当 Key —— 单字符（A/Z/5）碰巧正确，
+	///   但枚举名键（VolumeUp / VolumeDown / Pageup / F11 …）会**退化成首字母**
+	///   （录"手机音量+"实际轮询字母 V）⇒ 按音量键毫无反应、只动了系统音量。
+	///   这里单字符与枚举名两条路都走对。
+	/// </summary>
+	private static Key ParseKeySetting(string s)
+	{
+		try
+		{
+			if (string.IsNullOrWhiteSpace(s)) { return Key.None; }
+			s = s.Trim();
+			if (s.Length == 1)
+			{
+				int code = s[0];
+				if (code >= 32 && code <= 126) { return (Key)code; }
+				return Key.None;
+			}
+			if (Enum.TryParse(s, true, out Key k)) { return k; }
+			return Key.None;
+		}
+		catch { return Key.None; }
+	}
+
+	private void OnHotkeyTick()
+	{
+		try
+		{
+			// ★ v1.21.2：键位录制会话期间跳过（防录到的键被当快捷键执行）
+			Node _r = _tree != null && GodotObject.IsInstanceValid(_tree) ? _tree.Root : null;
+			if (_r != null && _r.HasMeta("__mod_keybind_capturing")) { _hotkeyPrev = false; return; }
+			string key = ReadHotkey();
+			if (string.IsNullOrEmpty(key)) { return; }
+			// ★ 2026-10-13 修：原 `char ch = key[0]` 对 VolumeUp/VolumeDown 这类
+			//   枚举名键会退化成首字母（录"手机音量+"实际轮询字母 V）⇒ 改用 ParseKeySetting。
+			Key hk = ParseKeySetting(key);
+			if (hk == Key.None) { return; }
+
+			bool down = false;
+			try { down = Input.IsKeyPressed(hk); } catch { }
+			if (down && !_hotkeyPrev)
+			{
+				_enabled = !_enabled;
+				Info("快捷键 " + key + " 切换 CD 显示总开关 → " + (_enabled ? "开" : "关"));
+				// 同步游戏内的勾选框（若存在），避免界面与状态不一致
+				try
+				{
+					Node root = _tree == null ? null : _tree.Root;
+					Node cb = root == null ? null : FindNodeByName(root, OptionCheckBoxName);
+					if (cb is BaseButton bb && GodotObject.IsInstanceValid(bb)) { bb.SetPressedNoSignal(_enabled); }
+				}
+				catch { }
+			}
+			_hotkeyPrev = down;
+		}
+		catch { }
+	}
+
+	/// <summary>按名字在子树里找节点（避免依赖具体层级）。</summary>
+	private static Node FindNodeByName(Node root, string name)
+	{
+		try
+		{
+			if (root == null || !GodotObject.IsInstanceValid(root)) { return null; }
+			if (root.Name == name) { return root; }
+			foreach (Node c in root.GetChildren())
+			{
+				Node r = FindNodeByName(c, name);
+				if (r != null) { return r; }
+			}
+		}
+		catch { }
+		return null;
+	}
+
+
+	private void RefreshSwitches(XWModRuntimeContext context)
+	{
+		bool? r;
+		r = TryReadSwitch(context, "enabled");          if (r.HasValue) { _enabled = r.Value; }
+		r = TryReadSwitch(context, "showLoad");         if (r.HasValue) { _showLoad = r.Value; }
+		r = TryReadSwitch(context, "showObstacle");     if (r.HasValue) { _showObstacle = r.Value; }
+		r = TryReadSwitch(context, "showObstacleHp");   if (r.HasValue) { _showObstacleHp = r.Value; }
+		r = TryReadSwitch(context, "showCardCd");       if (r.HasValue) { _showCardCd = r.Value; }
+		r = TryReadSwitch(context, "showSpawn");        if (r.HasValue) { _showSpawn = r.Value; }
+		r = TryReadSwitch(context, "showOtherTimer");   if (r.HasValue) { _showOtherTimer = r.Value; }
+		// ★ v1.21.0：补齐 mod.json 此前缺失的 5 个开关（代码一直支持，配置页漏暴露）
+		r = TryReadSwitch(context, "showGrowth");       if (r.HasValue) { _showGrowth = r.Value; }
+		r = TryReadSwitch(context, "showProduce");      if (r.HasValue) { _showProduce = r.Value; }
+		r = TryReadSwitch(context, "showCombat");       if (r.HasValue) { _showCombat = r.Value; }
+		r = TryReadSwitch(context, "showLevel");        if (r.HasValue) { _showLevel = r.Value; }
+		r = TryReadSwitch(context, "only_long_timers"); if (r.HasValue) { _onlyLongTimers = r.Value; }
+	}
+
+	private static void OnSettingsChanged(System.Collections.Generic.IReadOnlyList<string> keys) { }
+
+public void Initialize(XWModRuntimeContext context)
+	{
+			try { SponsorQrRoot = context.PackageRoot; } catch { }
+			try
+			{
+				if (context?.Settings != null && !_settingsSubscribedHcl)
+				{
+					context.Settings.Changed += OnRuntimeSettingsChanged;
+					_settingsSubscribedHcl = true;
+				}
+			}
+			catch { }
+			EnableInfoLog = false;   // ★ 2026-10-14 用户要求：默认关闭所有日志（原：EnableInfoLog = ReadLogSetting(context)）
+
+			RefreshSwitches(context);   // 面板里的 7 个开关覆盖 cfg
+			ReadModifyPanelSetting(context);   // 是否修改「战斗选项」界面
+
+			// 快捷键：独立一条 process_frame 连接，不干扰主循环
+			try
+			{
+				_tree = Engine.GetMainLoop() as SceneTree;
+				if (_tree != null && !_hotkeyConnected)
+				{
+					_hotkeyTick = Callable.From(new Action(OnHotkeyTick));
+					_tree.Connect("process_frame", _hotkeyTick);
+					_hotkeyConnected = true;
+					Info("快捷键总开关已挂载：" + ReadHotkey());
+				}
+			}
+			catch { }
 		try
 		{
 			_context = context;
@@ -832,6 +1054,11 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			if (_connected && _tree != null && GodotObject.IsInstanceValid(_tree))
 			{
 				_tree.Disconnect("process_frame", _tickCallable);
+			if (_tree != null && GodotObject.IsInstanceValid(_tree) && _hotkeyConnected)
+			{
+				try { _tree.Disconnect("process_frame", _hotkeyTick); } catch { }
+				_hotkeyConnected = false;
+			}
 			}
 		}
 		catch (Exception ex)
@@ -849,6 +1076,22 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 
 	private void OnProcessFrame()
 	{
+		try
+		{
+			// ★ 2026-10-13（用户实测"CD 按钮有时看得到有时看不到"）：注入路径存在竞态
+			//   （谁先建列 / 谁先扫到对话框）。这里加一条**独立守候**：只看"对话框在不在 + 按钮在不在"，
+			//   缺就补 —— 不再依赖 TryEnsureOptionCheckBox 那条链是否走到尾部。
+			ulong _bf = Engine.GetProcessFrames();
+			if (_bf - _cdBtnEnsureFrame >= 30UL)
+			{
+				_cdBtnEnsureFrame = _bf;
+				EnsureCdButtonOnly();
+			}
+		}
+		catch { }
+
+		try { MaintainCdPanelPause(); } catch { }   // ★ 面板暂停每帧维持（设一次会被别处改回）
+		try { SponsorQrInjector.Tick(Engine.GetMainLoop() as SceneTree, "血条·装填倒计时", SponsorQrRoot, "Resources/SponsorQR.png"); } catch { }
 		try
 		{
 			_frame++;
@@ -902,7 +1145,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			// 兼容实例化重名后缀（BattleOption2 之类），用 StartsWith 而非精确等值
 			if (node.Name.ToString().StartsWith(OptionRootName, StringComparison.Ordinal))
 			{
-				TryEnsureOptionCheckBox(node);
+				TryEnsureOptionCheckBox(node);   // ★ 面板注入（v1.22.0：不再由设置控制，用户要求直接出现在设置页）
 			}
 		}
 		catch (Exception exOpt)
@@ -1883,6 +2126,107 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			}
 		}
 		catch { }
+
+		// ②.9b 魅惑僵尸的「生成阳光」CD（v1.21.0，用户 2026-10-11 需求）
+		//
+		// ── 机制（读源码得到的硬事实）─────────────────────────────────
+		// 僵尸吃下「阳光魅惑菇」（PlantHypnoShroomSun）后，角色被附加 Hypnoses buff
+		// （TowerDefenseCharacterBuffHypnoses.Enter → SetupSunProduce），它会挂一个
+		// **runtime ProduceComponent**，InstanceId = "buff.hypnoses.produce"（不是
+		// "character.produce" ⇒ 上面 ②.9 的通道读不到它）。
+		// 字段：produceType = "BrainSun"（魅惑僵尸产的是脑阳光）/ "Sun"，
+		//       produceInterval = 5.0（阳光魅惑菇设定），timer 同普通产出组件。
+		// ⇒ 本分支专读这个 runtime 组件：显示「魅惑阳光 X.Xs」。
+		try
+		{
+			ProduceComponent pcH = cm.GetRuntime<ProduceComponent>("buff.hypnoses.produce");
+			if (pcH != null && _fProdTimer != null && _fProdTimer.GetValue(pcH) != null)
+			{
+				double intervalH = 0;
+				if (_fProdEffInterval != null && _fProdEffInterval.GetValue(pcH) != null)
+				{
+					intervalH = Convert.ToDouble(_fProdEffInterval.GetValue(pcH));
+				}
+				if (intervalH <= 0 && _fProdInterval != null && _fProdInterval.GetValue(pcH) != null)
+				{
+					intervalH = Convert.ToDouble(_fProdInterval.GetValue(pcH));
+				}
+				double tH = (_fProdTimer.GetValue(pcH) != null)
+					? Convert.ToDouble(_fProdTimer.GetValue(pcH)) : 0.0;
+				double remH = intervalH - tH;
+				if (remH < 0) { remH = 0; }
+				string prodH = "";
+				try { prodH = (_fProdType != null) ? ((_fProdType.GetValue(pcH) as string) ?? "") : ""; } catch { }
+				string labelH = prodH.IndexOf("Brain", StringComparison.OrdinalIgnoreCase) >= 0 ? "魅惑阳光" : "魅惑阳光";
+				if (intervalH > 0 && _prodReported.Add("HYP|" + (charName ?? "?")))
+				{
+					Info("魅惑产出[" + (charName ?? "?") + "]：interval=" + intervalH.ToString("0.###")
+						+ " type=" + prodH + " → 剩余 " + remH.ToString("0.###") + "s");
+				}
+				if (CatOn(7) && intervalH > 0 && remH > 0 && lines.Count < MaxTotalLines)
+				{
+					AddTimer(lines, labelH + " " + remH.ToString("0.0") + "s", BusyColor, intervalH);
+				}
+			}
+		}
+		catch { }
+
+		// ②.9c 魅惑补丁（PlantHypnoPatch，用户称"魅惑菇王"）——生成僵尸 CD + 剩余可啃次数
+		//
+		// ── 机制（TowerDefensePlantHypnoPatch.cs 实读）──────────────────
+		// · 被僵尸啃（AttackDeal type=="Eat"）→ 僵尸被魅惑，public int eatTime++
+		//   eatTime >= 3 时 Destroy ⇒ **最多被啃 3 次**，剩余 = 3 - eatTime
+		// · IdleProcessing 里 spawnTimer += delta*timeScale，>= 30.0 时用
+		//   spawnPacket（历史被啃僵尸中血量最高那只的卡）生成魅惑僵尸，然后清零
+		//   ⇒ 生成 CD 固定 30s，spawnTimer = 已过秒数
+		// · 三态外观（eatTime 0/1/2 换贴图）⇒ 用户看到"越啃越破"
+		// 显示两行：「生成僵尸 X.Xs」（青蓝）+「可啃 N 次」（绿）。
+		try
+		{
+			if (charName != null && charName.Contains("HypnoPatch"))
+			{
+				const BindingFlags F = BindingFlags.Instance | BindingFlags.Public
+					| BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+				Type hpType = character.GetType();
+				FieldInfo fEat = hpType.GetField("eatTime", F);
+				FieldInfo fSpawnTimer = hpType.GetField("spawnTimer", F);
+				if (fEat != null && fSpawnTimer != null)
+				{
+					int eat = Convert.ToInt32(fEat.GetValue(character));
+					double spawnPassed = Convert.ToDouble(fSpawnTimer.GetValue(character));
+					const double SpawnInterval = 30.0;
+					double remSpawn = SpawnInterval - spawnPassed;
+					if (remSpawn < 0) { remSpawn = 0; }
+					int remainEats = 3 - eat;
+					if (remainEats < 0) { remainEats = 0; }
+					if (_spawnReported.Add("HPATCH|" + charName))
+					{
+						Info("魅惑补丁[" + charName + "]：spawnTimer=" + spawnPassed.ToString("0.###")
+							+ "/30 eatTime=" + eat + " → 生成剩余 " + remSpawn.ToString("0.###") + "s，可啃 " + remainEats + " 次");
+					}
+					if (eat <= 0)
+					{
+						// 一次都没被啃：还不会生成僵尸（生成条件 eatTime > 0）⇒ 只显示可啃次数
+						if (lines.Count < MaxTotalLines)
+						{
+							AddLine(lines, "可啃 " + remainEats + " 次", ReadyColor);
+						}
+					}
+					else
+					{
+						if (remSpawn > 0 && lines.Count < MaxTotalLines)
+						{
+							AddTimer(lines, "生成僵尸 " + remSpawn.ToString("0.0") + "s", BusyColor, SpawnInterval);
+						}
+						if (lines.Count < MaxTotalLines)
+						{
+							AddLine(lines, "可啃 " + remainEats + " 次", ReadyColor);
+						}
+					}
+				}
+			}
+		}
+		catch (Exception exHp) { Warn("魅惑补丁分支异常：" + exHp.Message); }
 
 		// ②.10 IZM「血量产出」剩余触发次数（v1.18.0 新增，用户 2026-10-01 需求）
 		//
@@ -2902,7 +3246,15 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		{
 			return;
 		}
-		HBoxContainer cols = optionRoot.FindChild(OptionColumnsName, true, false) as HBoxContainer;
+		// ★ 2026-10-13：各开关已搬进**独立面板**（不再占用设置页的列）⇒ 幂等查找要在面板里做，
+		//   否则每帧都找不到、会反复重建。（面板层名字 ModCdPanelLayer，内部列沿用旧名以便复用校准逻辑）
+		// ★★ 修（用户实测："没看到 cd 面板按钮"）：**只能用"本 Mod 自己建的"东西判断是否已注入**！
+		//   之前会退回 `optionRoot.FindChild(OptionColumnsName)` —— 那是共享组件建的**列容器**，
+		//   时停 Mod 先注入时它就已经存在 ⇒ 这里误判为"已注入"直接 return，
+		//   于是 CD 面板与那个常驻按钮**永远不会被创建**（正是实测现象）。
+		Node cols = (_cdPanelBuilt && _cdPanelLayer != null && GodotObject.IsInstanceValid(_cdPanelLayer))
+			? (Node)_cdPanelLayer
+			: null;
 		if (cols != null && GodotObject.IsInstanceValid(cols))
 		{
 			// 已注入：校准总开关 + 6 类功能开关的状态
@@ -2938,35 +3290,26 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			return;   // 对话框还没初始化完，下轮扫描再试
 		}
 
-		// 1) 新建水平容器作为 CenterContainer 的唯一子（三列组）
-		HBoxContainer hbox = new HBoxContainer();
-		hbox.Name = OptionColumnsName;
-		hbox.AddThemeConstantOverride("separation", 30);
-
-		// 2) 第 1 列：游戏自带列表 + 总开关 + 署名（v1.13.1 三列布局）
-		center.RemoveChild(vbox);
-		VBoxContainer col1 = new VBoxContainer();
-		col1.Name = "ModCol1";
-		col1.AddThemeConstantOverride("separation", 20);
-		col1.CustomMinimumSize = new Vector2(300f, 0f);
-		col1.Alignment = BoxContainer.AlignmentMode.Begin;
-		col1.AddChild(vbox);   // 游戏自带列表（对象引用，reparent 不破坏游戏脚本）
+		// ★ 2026-10-13（需求 5：多 Mod 兼容）—— 建列/搬原生列**交给共享组件**：
+		//   它保证"谁先到谁建、后到者复用"，绝不重复搬移原生列，且列序按固定优先级排。
+		//   （此前是本文件内联实现，时停 Mod 也各写一套 ⇒ 先后顺序不同就可能出现"列中列"。）
+		VBoxContainer col1 = BattleOptionColumns.Ensure(optionRoot);
+		if (col1 == null) { return; }   // 对话框还没 _Ready，下轮扫描再试
 
 		// 署名/防冒用声明行（v1.15.4：移到**第三列最后一行**——用户要求）；
 		// 在第 3 列组装完成后追加（见下方 col3.AddChild(sign)）。
 
 		// 3) 第 2、3 列：**总开关 + 10 类功能开关**（v1.13.2：总开关从第 1 列移到第 2 列顶部，
 		//    列间距调紧到 6，确保 5 行都能显示出来——此前第 2/3 列只显示 4 行）
-		VBoxContainer col2 = new VBoxContainer();
-		col2.Name = OptionModColumnName;
-		col2.AddThemeConstantOverride("separation", 6);
-		col2.CustomMinimumSize = new Vector2(240f, 0f);
-		col2.Alignment = BoxContainer.AlignmentMode.Begin;
-		VBoxContainer col3 = new VBoxContainer();
-		col3.Name = "ModCol3";
-		col3.AddThemeConstantOverride("separation", 6);
-		col3.CustomMinimumSize = new Vector2(240f, 0f);
-		col3.Alignment = BoxContainer.AlignmentMode.Begin;
+		//    ★ 需求 5：同样改为共享组件"取或建"（列名固定 ⇒ 别的 Mod 建过就复用，不重复建）
+		// ★★ 2026-10-13（用户要求："将cdmod的各项设置移到新建的面板中 触发按钮始终显示"）：
+		//   **不再往战斗设置页加列**（原先 2 列 11 个开关把设置页撑成 5 列，原生设置被挤走、
+		//   时停按钮被挤出屏幕外）。改为：开关全部填进独立面板内部的两列 ——
+		//   变量名仍用 col2/col3，下面所有构件的代码**一行不用改**就自动填进面板。
+		EnsureCdPanelShell(optionRoot);
+		VBoxContainer col2 = _cdPanelCol2;
+		VBoxContainer col3 = _cdPanelCol3;
+		if (col2 == null || col3 == null) { return; }
 
 		CheckBox cb = new CheckBox();
 		cb.Name = OptionCheckBoxName;
@@ -3051,17 +3394,327 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		sign.AddThemeFontSizeOverride("font_size", 14);
 		col3.AddChild(sign);
 
-		hbox.AddChild(col1);
-		hbox.AddChild(col2);
-		hbox.AddChild(col3);
-		center.AddChild(hbox);
+		// ★★ 2026-10-13（用户要求）：开关已在独立面板里 ⇒ 这里只做两件事：
+		//   ① 列序归位（原生列 / 位置编辑器列 / mod 按钮列）
+		//   ② 在 mod 按钮列放一个**常驻**的「冷却开关」按钮，点击开/关面板（与时停面板按钮并排）
+		BattleOptionColumns.NormalizeOrder(optionRoot);
+
+		try
+		{
+			VBoxContainer modCol = BattleOptionColumns.GetOrCreateColumn(optionRoot,
+				BattleOptionColumns.TimeStopColName, BattleOptionColumns.TimeStopColMinWidth);
+			if (modCol != null && GodotObject.IsInstanceValid(modCol)
+				&& modCol.FindChild(CdToggleBtnName, true, false) == null)
+			{
+				Button tb = new Button();
+				tb.Name = CdToggleBtnName;
+				tb.Text = "CD开关设置面板";   // ★ 用户要求改的名字   // ★ 用户要求改的名字
+				tb.TooltipText = "打开/关闭「冷却倒计时 · 开关」面板（显示时游戏暂停，关闭后自动恢复）。";
+				tb.AddThemeFontSizeOverride("font_size", 14);
+				tb.CustomMinimumSize = new Vector2(0f, 40f);
+				tb.ProcessMode = Node.ProcessModeEnum.Always;
+				BattleOptionColumns.ApplyDarkButtonStyle(tb);   // ★ 用户要求：按钮颜色加深（守候补建这条才是实际生效的）
+				tb.Pressed += () =>
+				{
+					try
+					{
+						// 以图层实际状态取反，避免标志位与实际不同步（导致"点一次后再也打不开"）
+						bool cur = (_cdPanelLayer != null && GodotObject.IsInstanceValid(_cdPanelLayer)) && _cdPanelLayer.Visible;
+						SetCdPanelVisible(!cur);
+						// ★ 用户要求：面板打开时顺手收起战斗设置页 —— 它自己也压着 Paused，
+						//   不收起来的话"关闭面板"后游戏仍然是暂停的（用户实测反馈）。
+						if (!cur) { BattleOptionColumns.DismissDialog(optionRoot); }   // 收起设置页（共享工具）
+					}
+					catch { }
+				};
+				modCol.AddChild(tb);
+				Info("战斗设置页已放「冷却开关」按钮（各 CD 开关在面板里）。");
+			}
+		}
+		catch { }
 
 		if (!_checkBoxReadyReported)
 		{
 			_checkBoxReadyReported = true;
-			Info("设置页开关已注入（三列布局：第 1 列=游戏列表+总开关，第 2/3 列=功能开关各 5 个，当前："
-				+ (_enabled ? "开" : "关") + "）。");
+			Info("CD 开关面板已就绪（11 项 + 总开关 + 只显示≥5秒）。");
 		}
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────────
+	// ★★ 2026-10-13：CD 开关**独立面板**（用户要求）
+	//   · 触发按钮常驻显示、与时停面板按钮同一列；
+	//   · 面板显示时**暂停游戏但不显示游戏的暂停界面**（与呼出战斗设置页同效果）；
+	//   · 关闭面板**自动解除**并还原（含"关闭前面板所在对话框本来就有暂停"的情况）。
+	// ─────────────────────────────────────────────────────────────────────────────
+	private const string CdToggleBtnName = "ModCdToggleBtn";
+	private CanvasLayer _cdPanelLayer;
+	private VBoxContainer _cdPanelCol2;
+	private VBoxContainer _cdPanelCol3;
+	private bool _cdPanelBuilt;
+	private bool _cdPanelVisible;
+	private bool _cdPauseSaved;
+	private bool _cdSavedPaused;
+	private double _cdSavedTimeScale = 1.0;
+
+	/// <summary>建面板外壳（只建一次）：CanvasLayer + 遮罩 + 居中面板 + 两列 + 关闭按钮。</summary>
+	private void EnsureCdPanelShell(Node optionRoot)
+	{
+		try
+		{
+			if (_cdPanelBuilt && _cdPanelLayer != null && GodotObject.IsInstanceValid(_cdPanelLayer)) { return; }
+			SceneTree tree = (_tree != null && GodotObject.IsInstanceValid(_tree)) ? _tree : optionRoot?.GetTree();
+			if (tree == null || tree.Root == null) { return; }
+
+			CanvasLayer layer = new CanvasLayer();
+			layer.Name = "ModCdPanelLayer";
+			layer.Layer = 150;                                   // 与时停面板同层，都在对话框之上
+			layer.ProcessMode = Node.ProcessModeEnum.Always;      // ★ 暂停树下仍可点
+			tree.Root.AddChild(layer, false, Node.InternalMode.Disabled);
+
+			ColorRect dim = new ColorRect();
+			dim.Color = new Color(0f, 0f, 0f, 0.35f);
+			dim.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+			dim.MouseFilter = Control.MouseFilterEnum.Stop;       // 挡住下层点击
+			layer.AddChild(dim, false, Node.InternalMode.Disabled);
+
+			CenterContainer center = new CenterContainer();
+			center.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+			center.MouseFilter = Control.MouseFilterEnum.Ignore;
+			layer.AddChild(center, false, Node.InternalMode.Disabled);
+
+			PanelContainer panel = new PanelContainer();
+			panel.CustomMinimumSize = new Vector2(780f, 0f);
+			center.AddChild(panel, false, Node.InternalMode.Disabled);
+
+			VBoxContainer box = new VBoxContainer();
+			box.AddThemeConstantOverride("separation", 6);
+			panel.AddChild(box, false, Node.InternalMode.Disabled);
+
+			Label title = new Label();
+			title.Text = "冷却倒计时 · 开关";
+			title.HorizontalAlignment = HorizontalAlignment.Center;
+			title.AddThemeFontSizeOverride("font_size", 18);
+			title.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f, 1f));
+			title.AddThemeConstantOverride("outline_size", 5);
+			box.AddChild(title);
+
+			HBoxContainer cols = new HBoxContainer();
+			cols.Name = OptionColumnsName;     // 沿用旧名 ⇒ 上面那段"幂等校准"逻辑照旧可用
+			cols.AddThemeConstantOverride("separation", 24);
+			cols.Alignment = BoxContainer.AlignmentMode.Center;
+			box.AddChild(cols);
+			VBoxContainer c2 = new VBoxContainer();
+			c2.AddThemeConstantOverride("separation", 4);
+			cols.AddChild(c2);
+			VBoxContainer c3 = new VBoxContainer();
+			c3.AddThemeConstantOverride("separation", 4);
+			cols.AddChild(c3);
+			_cdPanelCol2 = c2;
+			_cdPanelCol3 = c3;
+
+			Button close = new Button();
+			close.Name = "ModCdPanelClose";
+			close.Text = "关闭";
+			close.CustomMinimumSize = new Vector2(0f, 44f);
+			close.ProcessMode = Node.ProcessModeEnum.Always;
+			close.Pressed += () => { try { SetCdPanelVisible(false); } catch { } };
+			box.AddChild(close);
+
+			layer.Visible = false;
+			_cdPanelLayer = layer;
+			_cdPanelBuilt = true;
+		}
+		catch { }
+	}
+
+	/// <summary>显示/隐藏 CD 面板；显示=暂停（无暂停界面），隐藏=自动解除并还原。</summary>
+	private void SetCdPanelVisible(bool visible)
+	{
+		try
+		{
+			if (visible && (!_cdPanelBuilt || _cdPanelLayer == null || !GodotObject.IsInstanceValid(_cdPanelLayer)))
+			{
+				EnsureCdPanelShell(null);
+			}
+			if (_cdPanelLayer == null || !GodotObject.IsInstanceValid(_cdPanelLayer)) { return; }
+			// ★★ 2026-10-13（用户实测："第一次打开 cd 面板貌似会显示空面板"）：
+			//   内容原来靠 30 帧一次的守候补 ⇒ 第一次打开必然是空的 ✗。
+			//   现在**显示之前先确保内容在**。
+			if (visible) { EnsureCdPanelContent(); }
+			// ★ 修（用户实测："CD 面板就显示了一次，点了一次后面就看不到了"）：
+			//   面板层可能与树脱钩（场景切换/被回收）⇒ 重新挂回根，再把可见性以**图层实际状态**为准。
+			try
+			{
+				if (!_cdPanelLayer.IsInsideTree())
+				{
+					Node rt = (_tree != null && GodotObject.IsInstanceValid(_tree)) ? _tree.Root : null;
+					if (rt != null)
+					{
+						_cdPanelLayer.GetParent()?.RemoveChild(_cdPanelLayer);
+						rt.AddChild(_cdPanelLayer, false, Node.InternalMode.Disabled);
+						Info("CD 面板已重新挂回场景根。");
+					}
+				}
+			}
+			catch { }
+			_cdPanelLayer.Visible = visible;
+			_cdPanelVisible = _cdPanelLayer.Visible;
+			if (visible) { PauseWhileCdPanel(); }
+			else
+			{
+				ResumeAfterCdPanel();
+				// ★★ 2026-10-13（用户实测"关掉还是没解除暂停"）：设置页自己也压着 Paused，
+				//   若它已经不在了，就**硬解除**（没有别的东西需要这个暂停了）。
+				try
+				{
+					Node rt = (_tree != null && GodotObject.IsInstanceValid(_tree)) ? _tree.Root : null;
+					bool dialogOpen = rt != null && rt.FindChild("BattleOption", true, false) != null;
+					if (!dialogOpen && _tree != null && GodotObject.IsInstanceValid(_tree))
+					{
+						_tree.Paused = false;
+						Engine.TimeScale = 1.0;
+						Info("已解除暂停（设置页已收起）。");
+					}
+				}
+				catch { }
+			}
+		}
+		catch { }
+	}
+
+
+	/// <summary>
+	/// ★★ 2026-10-13（用户实测："CD 面板显示了，但没内容"）：
+	///   面板外壳（标题 + 关闭）建出来了，里面的开关却一个没有 —— 说明**填内容那段代码没落到面板那两列上**
+	///   （早退/列引用为空都可能）。这里**独立地、幂等地**把内容填进面板内部两列：
+	///   总开关 + 只显示≥5秒 + 10 类功能开关（复用原有构件与信号处理）。
+	/// </summary>
+	private void EnsureCdPanelContent()
+	{
+		try
+		{
+			if (!_cdPanelBuilt || _cdPanelLayer == null || !GodotObject.IsInstanceValid(_cdPanelLayer)) { return; }
+			VBoxContainer c2 = _cdPanelCol2;
+			VBoxContainer c3 = _cdPanelCol3;
+			if (c2 == null || !GodotObject.IsInstanceValid(c2)) { return; }
+			if (c2.FindChild(OptionCheckBoxName, true, false) != null) { return; }   // 已有 ⇒ 幂等
+
+			CheckBox cb = new CheckBox();
+			cb.Name = OptionCheckBoxName;
+			cb.Text = "显示冷却倒计时";
+			cb.Alignment = HorizontalAlignment.Center;
+			cb.MouseDefaultCursorShape = Control.CursorShape.PointingHand;
+			cb.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+			cb.AddThemeConstantOverride("outline_size", 5);
+			cb.ButtonPressed = _enabled;
+			cb.Connect("toggled", Callable.From(new Action<bool>(OnToggleChanged)));
+			c2.AddChild(cb);
+
+			CheckBox longCb = new CheckBox();
+			longCb.Name = OnlyLongCheckBoxName;
+			longCb.Text = "只显示 ≥5 秒";
+			longCb.Alignment = HorizontalAlignment.Center;
+			longCb.MouseDefaultCursorShape = Control.CursorShape.PointingHand;
+			longCb.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+			longCb.AddThemeConstantOverride("outline_size", 5);
+			longCb.ButtonPressed = _onlyLongTimers;
+			longCb.Connect("toggled", Callable.From(new Action<bool>(OnOnlyLongChanged)));
+			c2.AddChild(longCb);
+
+			string[] ftext = { "装填与核能", "障碍物消失", "障碍物血量", "选卡栏种植CD", "生成计时", "角色计时器其他CD", "成长与充能", "产出倒计时", "战斗辅助", "等级与加速" };
+			int[] order = { 0, 1, 2, 3, 8, 9, 6, 7, 4, 5 };
+			for (int k = 0; k < order.Length; k++)
+			{
+				int idx = order[k];
+				CheckBox fcb = MakeFeatureCheckBox("ModFeatureCb" + idx, ftext[idx], GetFeatureValue(idx), idx);
+				((k < 5) ? c2 : (c3 != null && GodotObject.IsInstanceValid(c3) ? c3 : c2)).AddChild(fcb);
+			}
+			Info("CD 面板内容已补齐（总开关 + 只显示≥5秒 + 10 类开关）。");
+		}
+		catch (Exception ex) { Warn("填 CD 面板内容异常（已吞）：" + ex.Message); }
+	}
+
+	/// <summary>★ CD 面板按钮的独立守候（每 30 帧）：有对话框就确保按钮在。</summary>
+	private static ulong _cdBtnEnsureFrame;
+
+	private void EnsureCdButtonOnly()
+	{
+		try
+		{
+			Node root = (_tree != null && GodotObject.IsInstanceValid(_tree)) ? _tree.Root : null;
+			if (root == null) { return; }
+			Node dlg = root.FindChild("BattleOption", true, false);
+			if (dlg == null || !GodotObject.IsInstanceValid(dlg)) { return; }
+			VBoxContainer modCol = BattleOptionColumns.GetOrCreateColumn(dlg,
+				BattleOptionColumns.TimeStopColName, BattleOptionColumns.TimeStopColMinWidth);
+			if (modCol == null || !GodotObject.IsInstanceValid(modCol)) { return; }
+			EnsureCdPanelContent();   // ★ 顺手保证面板里有内容（用户实测：面板空壳）
+			if (modCol.FindChild(CdToggleBtnName, true, false) != null) { return; }
+			Button tb = new Button();
+			tb.Name = CdToggleBtnName;
+			tb.Text = "CD开关设置面板";   // ★ 用户要求改的名字
+			tb.TooltipText = "打开/关闭「冷却倒计时 · 开关」面板（显示时游戏暂停，关闭后自动恢复）。";
+			tb.AddThemeFontSizeOverride("font_size", 14);
+			tb.CustomMinimumSize = new Vector2(0f, 40f);
+			tb.ProcessMode = Node.ProcessModeEnum.Always;
+			BattleOptionColumns.ApplyDarkButtonStyle(tb);   // ★ 用户要求：按钮颜色加深
+			Node dlgRef = dlg;
+			tb.Pressed += () =>
+			{
+				try
+				{
+					bool cur = (_cdPanelLayer != null && GodotObject.IsInstanceValid(_cdPanelLayer)) && _cdPanelLayer.Visible;
+					SetCdPanelVisible(!cur);
+					if (!cur) { BattleOptionColumns.DismissDialog(dlgRef); }
+				}
+				catch { }
+			};
+			modCol.AddChild(tb);
+			BattleOptionColumns.NormalizeOrder(dlg);
+			Info("守候补上「CD设置面板」按钮。");
+		}
+		catch { }
+	}
+
+	/// <summary>★ 每帧维持 CD 面板的暂停（与时停面板同款）——只设一次会被别处改回去。</summary>
+	private void MaintainCdPanelPause()
+	{
+		try
+		{
+			if (!_cdPanelVisible || !_cdPauseSaved) { return; }
+			if (_tree == null || !GodotObject.IsInstanceValid(_tree)) { return; }
+			if (!_tree.Paused) { _tree.Paused = true; }
+			if (Engine.TimeScale != 1.0) { Engine.TimeScale = 1.0; }
+		}
+		catch { }
+	}
+
+	private void PauseWhileCdPanel()
+	{
+		try
+		{
+			if (_cdPauseSaved) { return; }
+			if (_tree == null || !GodotObject.IsInstanceValid(_tree)) { return; }
+			_cdSavedPaused = _tree.Paused;
+			_cdSavedTimeScale = Engine.TimeScale;
+			_cdPauseSaved = true;
+			Engine.TimeScale = 1.0;
+			_tree.Paused = true;
+		}
+		catch { }
+	}
+
+	private void ResumeAfterCdPanel()
+	{
+		try
+		{
+			if (!_cdPauseSaved) { return; }
+			_cdPauseSaved = false;
+			if (_tree == null || !GodotObject.IsInstanceValid(_tree)) { return; }
+			Engine.TimeScale = _cdSavedTimeScale;
+			_tree.Paused = _cdSavedPaused;
+		}
+		catch { }
 	}
 
 	private void OnToggleChanged(bool on)
@@ -4561,7 +5214,7 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// 诊断日志总开关（v1.14.1 用户要求：**注释 log 生成**）——false 时 `Info` 全部静默。
 	/// 诊断代码与探针逻辑完整保留（只是跳过输出），改回 true 即恢复；`Warn`（异常报告）不受影响。
 	/// </summary>
-	private const bool EnableInfoLog = false;   // v1.16.3：验证完毕，关闭诊断日志
+	private static bool EnableInfoLog;   // 由 Initialize 从「Mod 配置」读取（原为编译期常量）   // v1.16.3：验证完毕，关闭诊断日志
 
 	private void Info(string msg)
 	{
@@ -4575,7 +5228,30 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 
 	private void Warn(string msg)
 	{
+		if (!EnableInfoLog) { return; }
+		// ★ 2026-10-14：该输出原先绕过日志开关，现统一受 enableLog 控制
 		try { if (_context != null) { _context.Warn(LogPrefix + msg); } else { GD.PrintErr(LogPrefix + msg); } }
 		catch { }
+	}
+	private bool _settingsSubscribedHcl;
+
+	private void OnRuntimeSettingsChanged(System.Collections.Generic.IReadOnlyList<string> keys)
+	{
+		try
+		{
+			// ★ 配置保存后重读（各 Mod 的应用逻辑保持既有入口）
+			OnRuntimeSettingsChangedImpl(keys);
+		}
+		catch { }
+	}
+
+
+	private void OnRuntimeSettingsChangedImpl(System.Collections.Generic.IReadOnlyList<string> keys)
+	{
+		if (_context == null) { return; }
+		RefreshSwitches(_context);
+		ReadModifyPanelSetting(_context);
+		EnableInfoLog = false;   // ★ 2026-10-14 用户要求：默认关闭所有日志（原：EnableInfoLog = ReadLogSetting(_context)）
+		Info("配置已重读。");
 	}
 }
