@@ -3,6 +3,7 @@
   "id": "healthcooldowndisplay",
   "name": "血条·装填倒计时",
   "version": "1.21.2",
+  "postId": "28",
   "author": "apples1949",
   "description": "显示角色冷却、装填进度、障碍物血量和种植冷却，支持分类开关。",
   "playInstructions": "在僵尸血条上直接显示冷却进度。\n1. 各项开关（含原生血条设置）都在：选项 → Mod 管理 → 血条冷却显示 → 配置。\n2. 可设置快捷键一键开关总显示。\n3. 优先级：总开关 > 原生血条设置 > 5 秒显示。",
