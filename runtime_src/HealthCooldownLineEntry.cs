@@ -508,8 +508,6 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	private bool _showObstacle = true;
 	/// <summary>障碍物血量（障碍物的血量文本）。</summary>
 	private bool _showObstacleHp = true;
-	/// <summary>选卡栏种植 CD。</summary>
-	private bool _showCardCd = true;
 	/// <summary>生成计时（Spawn 键——植物/僵尸版的"生成 X.Xs"）。</summary>
 	private bool _showSpawn = true;
 	/// <summary>角色计时器其他CD（除障碍物与 Spawn 外的命名计时器）。</summary>
@@ -550,10 +548,10 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// <summary>「只显示 ≥5 秒」的配置键名。</summary>
 	private const string OnlyLongKey = "only_long_timers";
 
-	/// <summary>10 类功能开关的配置键名（与 UI 节点名一一对应）。</summary>
+	/// <summary>9 类功能开关的配置键名（与 UI 节点名一一对应）。</summary>
 	private static readonly string[] FeatureKeys =
 	{
-		"feature_load", "feature_obstacle", "feature_obstaclehp", "feature_cardcd",
+		"feature_load", "feature_obstacle", "feature_obstaclehp",
 		"feature_spawn", "feature_othertimer", "feature_growth", "feature_produce",
 		"feature_combat", "feature_level",
 	};
@@ -675,10 +673,6 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	private readonly System.Collections.Generic.HashSet<string> _fireReported
 		= new System.Collections.Generic.HashSet<string>();
 	private readonly System.Collections.Generic.HashSet<string> _fireBoostedReported
-		= new System.Collections.Generic.HashSet<string>();
-	// 选卡栏卡片种植 CD（v1.10.0）
-	private FieldInfo _fCardCd, _fCardCdTimer, _fCardOpen;
-	private readonly System.Collections.Generic.HashSet<string> _cardProbeReported
 		= new System.Collections.Generic.HashSet<string>();
 	// 倍率段执行探测（v1.10.1）
 	private readonly System.Collections.Generic.HashSet<string> _boostProbeReported
@@ -960,7 +954,6 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		r = TryReadSwitch(context, "showLoad");         if (r.HasValue) { _showLoad = r.Value; }
 		r = TryReadSwitch(context, "showObstacle");     if (r.HasValue) { _showObstacle = r.Value; }
 		r = TryReadSwitch(context, "showObstacleHp");   if (r.HasValue) { _showObstacleHp = r.Value; }
-		r = TryReadSwitch(context, "showCardCd");       if (r.HasValue) { _showCardCd = r.Value; }
 		r = TryReadSwitch(context, "showSpawn");        if (r.HasValue) { _showSpawn = r.Value; }
 		r = TryReadSwitch(context, "showOtherTimer");   if (r.HasValue) { _showOtherTimer = r.Value; }
 		// ★ v1.21.0：补齐 mod.json 此前缺失的 5 个开关（代码一直支持，配置页漏暴露）
@@ -1156,16 +1149,6 @@ public void Initialize(XWModRuntimeContext context)
 				Warn("设置页开关注入异常（本条只报一次）：" + exOpt.Message);
 			}
 		}
-		// 选卡栏卡片（UI）：种植 CD 数字（v1.10.0）
-		try
-		{
-			if (node.GetType().Name == "TowerDefenseInGamePacketShow")
-			{
-				ApplyToPacket(node);
-			}
-		}
-		catch { }
-
 		if (node is TowerDefenseCharacter character)
 		{
 			_dbgChars++;
@@ -1715,13 +1698,13 @@ public void Initialize(XWModRuntimeContext context)
 					int timerAdded = 0;
 					running.Sort((a2, b2) => a2.Rem.CompareTo(b2.Rem));
 					// v1.13.0：计时器按键分流——障碍物（坑洞/墓碑/炸弹核弹/大火）→"障碍物消失"(1)；
-					//   Spawn 键 →"生成计时"(4)；其余 →"角色计时器其他CD"(5)。
+					//   Spawn 键 →"生成计时"(3)；其余 →"角色计时器其他CD"(4)。
 					bool isObs13 = IsObstacleCharacter(character);
 					for (int i = 0; i < running.Count
 						&& timerAdded < MaxTimerLines && lines.Count < MaxTotalLines; i++)
 					{
 						int catT = isObs13 ? 1
-							: ((running[i].Key == "Spawn") ? 4 : 5);
+							: ((running[i].Key == "Spawn") ? 3 : 4);
 						if (!CatOn(catT))
 						{
 							continue;
@@ -1780,7 +1763,7 @@ public void Initialize(XWModRuntimeContext context)
 							+ " currentChewTime(快照)=" + curC.ToString("0.###")
 							+ " → 采用显示剩余=" + remC.ToString("0.###"));
 					}
-					if (CatOn(8) && ct > 0 && lines.Count < MaxTotalLines)
+					if (CatOn(7) && ct > 0 && lines.Count < MaxTotalLines)
 					{
 						AddTimer(lines, "咀嚼 " + remC.ToString("0.0") + "s", BusyColor, ct);
 					}
@@ -1894,7 +1877,7 @@ public void Initialize(XWModRuntimeContext context)
 						+ " 数组类型=" + (timesObj != null ? timesObj.GetType().FullName : "null")
 						+ " → growing=" + growing);
 				}
-				if (CatOn(6) && growing && remG > 0 && lines.Count < MaxTotalLines)
+				if (CatOn(5) && growing && remG > 0 && lines.Count < MaxTotalLines)
 				{
 					AddTimer(lines, "长大 " + remG.ToString("0.0") + "s", BusyColor, total);
 				}
@@ -1957,7 +1940,7 @@ public void Initialize(XWModRuntimeContext context)
 					Info("消化[" + (charName ?? "?") + "]：breakDownTimer(剩余)=" + t.ToString("0.###")
 						+ " 消化总时长(breakDownTime)=" + bt.ToString("0.###"));
 				}
-				if (CatOn(8) && bt > 0 && remM > 0 && busy && lines.Count < MaxTotalLines)
+				if (CatOn(7) && bt > 0 && remM > 0 && busy && lines.Count < MaxTotalLines)
 				{
 					AddTimer(lines, "消化 " + remM.ToString("0.0") + "s", BusyColor, bt);
 				}
@@ -2002,7 +1985,7 @@ public void Initialize(XWModRuntimeContext context)
 						+ " 组件timer=" + tC.ToString("0.###")
 						+ " → 剩余=" + remC.ToString("0.###"));
 				}
-				if (CatOn(6) && interval > 0 && remC > 0 && lines.Count < MaxTotalLines)
+				if (CatOn(5) && interval > 0 && remC > 0 && lines.Count < MaxTotalLines)
 				{
 					// v1.8.1：带上充能等级（用户要的"等级显示"）
 					AddTimer(lines, "充能" + lv + " " + remC.ToString("0.0") + "s", BusyColor, interval);
@@ -2047,7 +2030,7 @@ public void Initialize(XWModRuntimeContext context)
 							+ " 充能计时(_chargeTimer)=" + t2.ToString("0.###")
 							+ " → 剩余=" + rem2.ToString("0.###"));
 					}
-					if (CatOn(6) && interval2 > 0 && rem2 > 0 && lines.Count < MaxTotalLines)
+					if (CatOn(5) && interval2 > 0 && rem2 > 0 && lines.Count < MaxTotalLines)
 					{
 						// v1.8.1：带上充能等级（"充能0 29.7s" = 等级0、距下一级 29.7s）
 						AddTimer(lines, "充能" + lv2 + " " + rem2.ToString("0.0") + "s", BusyColor, interval2);
@@ -2119,7 +2102,7 @@ public void Initialize(XWModRuntimeContext context)
 						+ " produceType=\"" + prodTypeStr + "\""
 						+ " → 显示 " + label + " " + remS.ToString("0.###") + "s");
 				}
-				if (CatOn(7) && interval > 0 && remS > 0 && lines.Count < MaxTotalLines)
+				if (CatOn(6) && interval > 0 && remS > 0 && lines.Count < MaxTotalLines)
 				{
 					AddTimer(lines, label + " " + remS.ToString("0.0") + "s", BusyColor, interval);
 				}
@@ -2163,7 +2146,7 @@ public void Initialize(XWModRuntimeContext context)
 					Info("魅惑产出[" + (charName ?? "?") + "]：interval=" + intervalH.ToString("0.###")
 						+ " type=" + prodH + " → 剩余 " + remH.ToString("0.###") + "s");
 				}
-				if (CatOn(7) && intervalH > 0 && remH > 0 && lines.Count < MaxTotalLines)
+				if (CatOn(6) && intervalH > 0 && remH > 0 && lines.Count < MaxTotalLines)
 				{
 					AddTimer(lines, labelH + " " + remH.ToString("0.0") + "s", BusyColor, intervalH);
 				}
@@ -2355,7 +2338,7 @@ public void Initialize(XWModRuntimeContext context)
 								+ "（治疗不影响：hpNext 单向递减）");
 						}
 
-						if (CatOn(7) && lines.Count < MaxTotalLines)
+						if (CatOn(6) && lines.Count < MaxTotalLines)
 						{
 							string prodLabel = "产出";
 							try
@@ -2466,7 +2449,7 @@ public void Initialize(XWModRuntimeContext context)
 						+ (isProducer ? "（产出型）" : "（动作型：" + tn + "）"));
 				}
 
-				if (CatOn(7) && lines.Count < MaxTotalLines)
+				if (CatOn(6) && lines.Count < MaxTotalLines)
 				{
 					Color c2 = (left2 > 0) ? ReadyColor : DisabledColor;
 					AddLine(lines, label2 + " 剩 " + left2 + "/" + InlineSegments + " 次", c2);
@@ -2593,7 +2576,7 @@ public void Initialize(XWModRuntimeContext context)
 			{
 				object run = _fPotatoRun.GetValue(potato);
 				object rem = _fPotatoRemain != null ? _fPotatoRemain.GetValue(potato) : null;
-				if (CatOn(8) && rem != null && lines.Count < MaxTotalLines)
+				if (CatOn(7) && rem != null && lines.Count < MaxTotalLines)
 				{
 					double r = Convert.ToDouble(rem);
 					bool running = (run is bool bb) && bb;
@@ -2622,7 +2605,7 @@ public void Initialize(XWModRuntimeContext context)
 		try
 		{
 			BowlingComponent bowl = cm.GetRuntime<BowlingComponent>(BowlingInstanceId);
-			if (CatOn(8) && bowl != null && _fBowlHit != null && _fBowlMax != null && lines.Count < MaxTotalLines)
+			if (CatOn(7) && bowl != null && _fBowlHit != null && _fBowlMax != null && lines.Count < MaxTotalLines)
 			{
 				object hit = _fBowlHit.GetValue(bowl);
 				object max = _fBowlMax.GetValue(bowl);
@@ -2653,7 +2636,7 @@ public void Initialize(XWModRuntimeContext context)
 		try
 		{
 			CatapultComponent cat = cm.GetRuntime<CatapultComponent>(CatapultInstanceId);
-			if (CatOn(8) && cat != null && _fCatCur != null && _fCatMax != null && lines.Count < MaxTotalLines)
+			if (CatOn(7) && cat != null && _fCatCur != null && _fCatMax != null && lines.Count < MaxTotalLines)
 			{
 				object cur = _fCatCur.GetValue(cat);
 				object max = _fCatMax.GetValue(cat);
@@ -2678,7 +2661,7 @@ public void Initialize(XWModRuntimeContext context)
 		try
 		{
 			TanglekelpComponent tk = cm.GetRuntime<TanglekelpComponent>(TanglekelpInstanceId);
-			if (EnableGrabLine && CatOn(8) && tk != null && _fTkCur != null && _fTkMax != null
+			if (EnableGrabLine && CatOn(7) && tk != null && _fTkCur != null && _fTkMax != null
 				&& lines.Count < MaxTotalLines)
 			{
 				object tkCur = _fTkCur.GetValue(tk);
@@ -2727,7 +2710,7 @@ public void Initialize(XWModRuntimeContext context)
 					Info("啃碑[" + (charName ?? "?") + "]：consumeDuration=" + dur.ToString("0.###")
 						+ " → 剩余=" + remainG.ToString("0.###"));
 				}
-				if (CatOn(8) && gbRun && dur > 0 && remainG > 0 && remainG <= dur
+				if (CatOn(7) && gbRun && dur > 0 && remainG > 0 && remainG <= dur
 					&& lines.Count < MaxTotalLines)
 				{
 					AddTimer(lines, "啃碑 " + remainG.ToString("0.0") + "s", BusyColor, dur);
@@ -3013,7 +2996,7 @@ public void Initialize(XWModRuntimeContext context)
 								Info("伤害变化[" + bk3 + "]：基线=" + dmBase.ToString("0.###")
 									+ " → 当前=" + dm.ToString("0.###"));
 							}
-							if (CatOn(9) && lines.Count < MaxTotalLines)
+							if (CatOn(8) && lines.Count < MaxTotalLines)
 							{
 								double rr = (dmBase > 0.0001) ? (dm / dmBase) : 1.0;
 								if (rr > 1.0001)
@@ -3035,7 +3018,7 @@ public void Initialize(XWModRuntimeContext context)
 			}
 			catch { }
 
-			if (CatOn(9) && lines.Count < MaxTotalLines)
+			if (CatOn(8) && lines.Count < MaxTotalLines)
 			{
 				// ★ v1.10.4：以"种下时的实测值"为基线，只显示**真实变化**——
 				//   游戏里不少植物天生 base≠cur（如间隔 1.5 vs 3），拿标称值当基准会产生
@@ -3349,10 +3332,10 @@ public void Initialize(XWModRuntimeContext context)
 		}
 		catch { }
 
-		string[] ftext = { "装填与核能", "障碍物消失", "障碍物血量", "选卡栏种植CD", "生成计时", "角色计时器其他CD", "成长与充能", "产出倒计时", "战斗辅助", "等级与加速" };
+		string[] ftext = { "装填与核能", "障碍物消失", "障碍物血量", "生成计时", "角色计时器其他CD", "成长与充能", "产出倒计时", "战斗辅助", "等级与加速" };
 		// v1.13.5：**显示顺序表**（用户要求："战斗辅助"与"生成计时"互换位置）——
 		//   功能索引不变（文本/配置键/探针仍按原 idx），只调显示位次与"前5/后5"的列分配。
-		int[] order = { 0, 1, 2, 3, 8, 9, 6, 7, 4, 5 };   // v1.15.2：角色计时其他CD(5) 与 等级与加速(9) 互换位置
+		int[] order = { 0, 1, 2, 7, 8, 5, 6, 3, 4 };   // v1.15.2：角色计时其他CD(4) 与 等级与加速(8) 互换位置
 		for (int k = 0; k < order.Length; k++)
 		{
 			int idx = order[k];   // 捕获副本（for 循环变量共享，必须复制）
@@ -3363,9 +3346,9 @@ public void Initialize(XWModRuntimeContext context)
 			// v1.15.2：为"说明型"开关加一行小字说明（战斗辅助 / 角色计时器其他CD / 等级与加速），
 			//   文字多则自动换行（AutowrapMode + 限定宽度）。
 			string subTxt = null;
-			if (idx == 8) { subTxt = "— 咀嚼·消化·土豆雷·篮球·投石车·啃碑 —"; }
-			else if (idx == 5) { subTxt = "— 开火·蓄力·张开·闭合·倒计时·销毁·布雷·放置·限时 —"; }
-			else if (idx == 9) { subTxt = "— 加速·攻速·弹数·伤害·动画·加成buff —"; }
+			if (idx == 7) { subTxt = "— 咀嚼·消化·土豆雷·篮球·投石车·啃碑 —"; }
+			else if (idx == 4) { subTxt = "— 开火·蓄力·张开·闭合·倒计时·销毁·布雷·放置·限时 —"; }
+			else if (idx == 8) { subTxt = "— 加速·攻速·弹数·伤害·动画·加成buff —"; }
 			if (subTxt != null)
 			{
 				Label sub = new Label();
@@ -3621,15 +3604,15 @@ public void Initialize(XWModRuntimeContext context)
 			longCb.Connect("toggled", Callable.From(new Action<bool>(OnOnlyLongChanged)));
 			c2.AddChild(longCb);
 
-			string[] ftext = { "装填与核能", "障碍物消失", "障碍物血量", "选卡栏种植CD", "生成计时", "角色计时器其他CD", "成长与充能", "产出倒计时", "战斗辅助", "等级与加速" };
-			int[] order = { 0, 1, 2, 3, 8, 9, 6, 7, 4, 5 };
+			string[] ftext = { "装填与核能", "障碍物消失", "障碍物血量", "生成计时", "角色计时器其他CD", "成长与充能", "产出倒计时", "战斗辅助", "等级与加速" };
+			int[] order = { 0, 1, 2, 7, 8, 5, 6, 3, 4 };
 			for (int k = 0; k < order.Length; k++)
 			{
 				int idx = order[k];
 				CheckBox fcb = MakeFeatureCheckBox("ModFeatureCb" + idx, ftext[idx], GetFeatureValue(idx), idx);
 				((k < 5) ? c2 : (c3 != null && GodotObject.IsInstanceValid(c3) ? c3 : c2)).AddChild(fcb);
 			}
-			Info("CD 面板内容已补齐（总开关 + 只显示≥5秒 + 10 类开关）。");
+			Info("CD 面板内容已补齐（总开关 + 只显示≥5秒 + 9 类开关）。");
 		}
 		catch (Exception ex) { Warn("填 CD 面板内容异常（已吞）：" + ex.Message); }
 	}
@@ -3953,118 +3936,6 @@ public void Initialize(XWModRuntimeContext context)
 	}
 
 	/// <summary>
-	/// 分类开关（v1.9.0）：0=装填与核能 1=计时器与点击 2=成长与充能 3=产出 4=战斗辅助 5=等级与加速。
-	/// 各分支的输出统一用它把关（识别/状态逻辑不受影响，只控制"要不要显示这一行"）。
-	/// </summary>
-	/// <summary>
-	/// 选卡栏卡片（TowerDefenseInGamePacketShow）的"种植 CD"数字（v1.10.0）。
-	/// 字段：coldDown（冷却总时长）/ coldDownTimer（计时）/ _coldDownOpen（是否启用冷却）。
-	/// 剩余 = coldDown − coldDownTimer（方向由诊断核对）；归"计时器与点击"开关（CatOn(1)）。
-	/// </summary>
-	private void ApplyToPacket(Node card)
-	{
-		try
-		{
-			if (_fCardCd == null || _fCardCdTimer == null)
-			{
-				return;
-			}
-			if (!_enabled || !CatOn(3))
-			{
-				HideCardLabel(card);
-				return;
-			}
-			double cd = (_fCardCd.GetValue(card) != null)
-				? Convert.ToDouble(_fCardCd.GetValue(card)) : 0.0;
-			// ★ 方向定案（10:07 日志）：coldDownTimer **本身就是"剩余"**（从 coldDown 递减，
-			//   实测 coldDown=30 / coldDownTimer=29.533 且冷却启用中）——直接用它，不要再相减。
-			double ct = (_fCardCdTimer.GetValue(card) != null)
-				? Convert.ToDouble(_fCardCdTimer.GetValue(card)) : 0.0;
-			bool open = (_fCardOpen == null) || ((_fCardOpen.GetValue(card) is bool cb2) && cb2);
-			double remain = ct;
-			if (remain < 0) { remain = 0; }
-			if (cd > 0 && remain > 0)
-			{
-				string key = card.GetInstanceId().ToString();
-				if (_cardProbeReported.Add(key))
-				{
-					Info("卡片CD：coldDown=" + cd.ToString("0.###")
-						+ " coldDownTimer(剩余)=" + ct.ToString("0.###")
-						+ " 启用冷却=" + open);
-				}
-			}
-			Label lbl = EnsureCardLabel(card);
-			if (lbl == null)
-			{
-				return;
-			}
-			// 显示条件不再依赖 _coldDownOpen（实测该标记为 false 时卡片其实在冷却中）
-			if (cd > 0 && remain > 0 && remain <= cd)
-			{
-				lbl.Visible = true;
-				lbl.Text = remain.ToString("0.0");
-				Control c = card as Control;
-				if (c != null)
-				{
-					lbl.Position = c.Size / 2f - new Vector2(30f, 12f);
-				}
-			}
-			else if (lbl.Visible)
-			{
-				lbl.Visible = false;
-			}
-		}
-		catch { }
-	}
-
-	/// <summary>卡片上的 CD 数字标签（懒创建、幂等）。</summary>
-	private Label EnsureCardLabel(Node card)
-	{
-		try
-		{
-			Label lbl = card.GetNodeOrNull<Label>("ModCardCdLabel");
-			if (lbl != null && GodotObject.IsInstanceValid(lbl))
-			{
-				return lbl;
-			}
-			lbl = new Label();
-			lbl.Name = "ModCardCdLabel";
-			lbl.ZIndex = 200;
-			lbl.MouseFilter = Control.MouseFilterEnum.Ignore;
-			lbl.HorizontalAlignment = HorizontalAlignment.Center;
-			lbl.VerticalAlignment = VerticalAlignment.Center;
-			lbl.Size = new Vector2(60f, 24f);
-			Font font = null;
-			try { font = ResourceLoader.Load<Font>("res://Asset/Font/fzkt.ttf"); } catch { }
-			if (font != null)
-			{
-				lbl.AddThemeFontOverride("font", font);
-			}
-			lbl.AddThemeFontSizeOverride("font_size", 16);
-			lbl.AddThemeConstantOverride("outline_size", 5);
-			lbl.AddThemeColorOverride("font_color", BusyColor);
-			lbl.Visible = false;
-			card.AddChild(lbl);
-			return lbl;
-		}
-		catch { return null; }
-	}
-
-	/// <summary>收起卡片上的 CD 标签。</summary>
-	private void HideCardLabel(Node card)
-	{
-		try
-		{
-			Label lbl = card.GetNodeOrNull<Label>("ModCardCdLabel");
-			if (lbl != null && GodotObject.IsInstanceValid(lbl) && lbl.Visible)
-			{
-				lbl.Visible = false;
-			}
-		}
-		catch { }
-	}
-
-	/// <summary>
 	/// 追加一行**非计时**信息（计数 / 状态 / 百分比…）。
 	/// `Total = 0` ⇒ **永不参与**「只显示 ≥5 秒」过滤。
 	/// </summary>
@@ -4151,12 +4022,11 @@ public void Initialize(XWModRuntimeContext context)
 			case 0: return _showLoad;        // 装填与核能
 			case 1: return _showObstacle;    // 障碍物消失
 			case 2: return _showObstacleHp;  // 障碍物血量
-			case 3: return _showCardCd;      // 选卡栏种植 CD
-			case 4: return _showSpawn;       // 生成计时
-			case 5: return _showOtherTimer;  // 角色计时器其他CD
-			case 6: return _showGrowth;      // 成长与充能
-			case 7: return _showProduce;     // 产出倒计时
-			case 8: return _showCombat;      // 战斗辅助
+			case 3: return _showSpawn;       // 生成计时
+			case 4: return _showOtherTimer;  // 角色计时器其他CD
+			case 5: return _showGrowth;      // 成长与充能
+			case 6: return _showProduce;     // 产出倒计时
+			case 7: return _showCombat;      // 战斗辅助
 			default: return _showLevel;      // 等级与加速
 		}
 	}
@@ -4168,12 +4038,11 @@ public void Initialize(XWModRuntimeContext context)
 			case 0: return _showLoad;
 			case 1: return _showObstacle;
 			case 2: return _showObstacleHp;
-			case 3: return _showCardCd;
-			case 4: return _showSpawn;
-			case 5: return _showOtherTimer;
-			case 6: return _showGrowth;
-			case 7: return _showProduce;
-			case 8: return _showCombat;
+			case 3: return _showSpawn;
+			case 4: return _showOtherTimer;
+			case 5: return _showGrowth;
+			case 6: return _showProduce;
+			case 7: return _showCombat;
 			default: return _showLevel;
 		}
 	}
@@ -4185,12 +4054,11 @@ public void Initialize(XWModRuntimeContext context)
 			case 0: _showLoad = v; break;
 			case 1: _showObstacle = v; break;
 			case 2: _showObstacleHp = v; break;
-			case 3: _showCardCd = v; break;
-			case 4: _showSpawn = v; break;
-			case 5: _showOtherTimer = v; break;
-			case 6: _showGrowth = v; break;
-			case 7: _showProduce = v; break;
-			case 8: _showCombat = v; break;
+			case 3: _showSpawn = v; break;
+			case 4: _showOtherTimer = v; break;
+			case 5: _showGrowth = v; break;
+			case 6: _showProduce = v; break;
+			case 7: _showCombat = v; break;
 			default: _showLevel = v; break;
 		}
 	}
@@ -4202,12 +4070,11 @@ public void Initialize(XWModRuntimeContext context)
 			case 0: return "装填与核能";
 			case 1: return "障碍物消失";
 			case 2: return "障碍物血量";
-			case 3: return "选卡栏种植CD";
-			case 4: return "生成计时";
-			case 5: return "角色计时器其他CD";
-			case 6: return "成长与充能";
-			case 7: return "产出倒计时";
-			case 8: return "战斗辅助";
+			case 3: return "生成计时";
+			case 4: return "角色计时器其他CD";
+			case 5: return "成长与充能";
+			case 6: return "产出倒计时";
+			case 7: return "战斗辅助";
 			default: return "等级与加速";
 		}
 	}
@@ -5164,11 +5031,6 @@ public void Initialize(XWModRuntimeContext context)
 			_fFireTimer = fireType.GetField("timer", F);
 			_fFireNum = fireType.GetField("fireNum", F);
 			_fFireCurNum = fireType.GetField("currentFireNum", F);
-			// 选卡栏卡片（种植 CD）
-			Type cardType = typeof(TowerDefenseInGamePacketShow);
-			_fCardCd = cardType.GetField("coldDown", F);
-			_fCardCdTimer = cardType.GetField("coldDownTimer", F);
-			_fCardOpen = cardType.GetField("_coldDownOpen", F);
 			// 动画精灵时间缩放（猫窝 cadence 探针用）
 			_fSpriteTimeScale = typeof(AdobeAnimateSprite).GetField("_timeScale", F);
 			// 障碍物血量文本（ShowHealthComponent 的本体血量显示文本）
