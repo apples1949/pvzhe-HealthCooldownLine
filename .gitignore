@@ -1,0 +1,6 @@
+*.log
+bin/
+obj/
+*.out
+*.err
+*.exit

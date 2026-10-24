@@ -160,8 +160,10 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// **广义障碍物**（v1.13.9）：非植物 / 非僵尸 / 非割草机，且**身上有 HurtComponent（有血量）**
 	/// 的角色都算——覆盖垃圾桶（TrashBin）等名单外的障碍物。血量显示用此判定；
 	/// "障碍物消失"计时分流仍用 `IsObstacleCharacter`（5 类精确名单）。
+	/// ★ v1.23.0 起本判定改为**实例方法**（要写诊断日志 `_obstacleHpReported` / `Info`），
+	///   唯一调用点 `TryCollectObstacleHp` 本来就是实例方法。
 	/// </summary>
-	private static bool IsObstacleLike(TowerDefenseCharacter ch)
+	private bool IsObstacleLike(TowerDefenseCharacter ch)
 	{
 		try
 		{
@@ -182,9 +184,34 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			{
 				return false;
 			}
+			// ★★ v1.23.0（用户："障碍物血量显示了雪球的血量，不应该显示"）：
+			//   雪球 = 「雪球射手」`TowerDefensePlantSnowManPea` 生成的**可滚动物件**
+			//   `TowerDefenseItemSnowBall`（`Asset/Anime/Character/Item/SnowBall`）：
+			//   按一下就开始往一侧滚、撞僵尸（打满 5 次 / 出界 / 入水即消失）——**它是武器，不是障碍物**。
+			//   它之所以被"广义障碍物"判定命中，是因为它挂了 `BowlingComponent`（滚球机制）并继承了
+			//   通用角色组件集 `Prefab/TowerDefense/Character/ComponentSets/TowerDefenseCharacterComponentSet.tres`
+			//   （该组件集**所有角色都有** HurtComponent / ShowHealthComponent）⇒ 类名里既没有 Plant
+			//   也没有 Zombie，血量就被当成"障碍物血量"显示出来了。
+			//   ⇒ 排除依据取 **`BowlingComponent`（InstanceId = "character.bowling"）**：
+			//     全库 15 个挂它的角色里 13 个是坚果系植物（上面 `Contains("Plant")` 已拦），
+			//     剩下两个正是**雪球 `ItemSnowBall`** 与同族滚球道具**足球 `ItemSoccerBall`**。
+			//   另加类名兜底（`SnowBall` / `SoccerBall`）——万一某个滚球道具的 bowling 组件
+			//   还没注册进运行时表（`InitiallyAlive=false` 期间），单靠组件判定会漏，名字兜底必中。
+			if (tn.Contains("SnowBall") || tn.Contains("SoccerBall"))
+			{
+				return false;
+			}
 			ComponentManager cmL = ch.componentManager;
 			if (cmL == null)
 			{
+				return false;
+			}
+			if (FindComponentOfType<BowlingComponent>(cmL) != null)
+			{
+				if (_obstacleHpReported.Add("BOWL|" + tn))
+				{
+					Info("血量跳过[" + tn + "]：滚球类道具（有 BowlingComponent），不是障碍物");
+				}
 				return false;
 			}
 			return FindComponentOfType<HurtComponent>(cmL) != null;

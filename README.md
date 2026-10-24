@@ -1,5 +1,10 @@
 # 血条·装填倒计时（HealthCooldownLine）
 
+> ⚠️ **v1.23.0（2026-10-24，按用户要求）**：**「障碍物血量」不再显示雪球的血量** ——
+> 雪球（`TowerDefenseItemSnowBall`，雪球射手生成的滚球道具）与同族滚球道具（足球）
+> 因挂了 `BowlingComponent` 被排除出「障碍物」判定（细节见下文 v1.23.0 条目）。
+> 普通障碍物（垃圾桶 / 墓碑 / 定时炸弹 / 符石等）的血量显示**不变**。
+
 > ⚠️ **v1.22.0（2026-10-23，按用户要求）**：**「选卡栏卡片的种植 CD」显示已整段删除** ——
 > 卡片中央的 `ModCardCdLabel` 剩余秒数、相关反射字段（`coldDown` / `coldDownTimer` / `_coldDownOpen`）、
 > 配置项 `showCardCd` 与游戏内面板的第 4 类开关全部移除；功能开关由 10 类减为 9 类（索引 4..9 已重编号为 3..8）。
@@ -31,6 +36,7 @@
 
 | 版本 | 变更 |
 | --- | --- |
+| **1.23.0** | **「障碍物血量」不再显示雪球的血量** —— 雪球是「雪球射手」生成的滚球道具（按下即滚出去撞人，打满 5 次 / 出界 / 入水消失），属于武器不是障碍物；它继承了通用角色组件集（自带 `HurtComponent`）、类名又不含 `Plant`/`Zombie`，被「广义障碍物」判定误判。现按 **`BowlingComponent`（滚球机制）** 排除滚球类道具（雪球 `ItemSnowBall` + 同族足球 `ItemSoccerBall`），并加类名兜底；垃圾桶/墓碑/炸弹/符石等真障碍物血量显示不变 |
 | **1.21.2** | 新增：魅惑补丁（用户称魅惑菇王）专属显示——「生成僵尸 X.Xs」（30s 周期）+「可啃 N 次」（最多 3 次，啃满自毁）。 |
 | **1.20.1** | 修复泡椒罐子「装填 N/4」恒显示 `0/4`、且「发射 X.Xs」不出现 —— 根因是 `jalaList` / `timerList` 是 `Godot.Collections.Array<T>`，**它与非泛型 `Array` 没有继承关系**，原先 `is Godot.Collections.Array` **恒 false**（同项目 v1.7.1 踩过的**同一个坑**）；现改走「反射读 `Count` + 泛型 `as` 精确匹配」 |
 | **1.20.0** | 「只显示 ≥5 秒」改为按计时器的**总时长**判定 —— 总时长低于 4.9 秒的计时器**整行不显示**（此前是"剩余低于 4.9 秒才隐藏"，长计时器会在最后几秒**突然消失**）；总时长 ≥ 4.9 秒的计时器从满值**一路显示到 0** |
@@ -59,6 +65,18 @@
 
 **v1.14.0 调整（坑洞不显示血量）**：坑洞（Crater 系）**排除在血量显示之外**（两条判定路径双保险）
 ——它没有"血量"概念；其"消失 X.Xs"计时仍由"障碍物消失"开关正常显示。
+
+**v1.23.0 修复（滚球类道具不算障碍物）**：用户报"障碍物血量显示了雪球的血量，不应该显示"。
+雪球 = `TowerDefenseItemSnowBall`（`Asset/Anime/Character/Item/SnowBall`，「雪球射手」
+`TowerDefensePlantSnowManPea` 生成的道具）：`MousePressComponent` 按一下 → `BowlingComponent`
+滚出去撞僵尸（`hitNum` 满 5 / 出界 / 入水即消失），**是武器，不是障碍物**。
+误判链路：它挂在通用角色组件集 `Prefab/TowerDefense/Character/ComponentSets/
+TowerDefenseCharacterComponentSet.tres`（**所有角色都有** `HurtComponent` / `ShowHealthComponent`）
+⇒ 类名既不含 `Plant` 也不含 `Zombie` ⇒ 命中 `IsObstacleLike` 的"广义障碍物"。
+**排除判据**：① 角色上挂了 `BowlingComponent`（InstanceId `character.bowling`）⇒ 滚球道具，
+不算障碍物（全库 15 个挂它的角色：13 个坚果系植物已被 `Plant` 拦下，剩 2 个正是雪球与足球）；
+② 类名兜底 `SnowBall` / `SoccerBall`（防 `InitiallyAlive=false` 期间组件未注册进运行时表漏判）。
+`IsObstacleLike` 因此改为**实例方法**（要写诊断日志）。
 
 **v1.13.9 改进（广义障碍物判定）**：此前障碍物只认 5 类精确名单（坑洞/墓碑/炸弹/核弹/大火），
 垃圾桶等名单外的被漏。新增 **`IsObstacleLike`**：**非植物/非僵尸/非割草机 + 有 `HurtComponent`
