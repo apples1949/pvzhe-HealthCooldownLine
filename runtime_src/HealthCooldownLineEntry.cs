@@ -575,13 +575,38 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// <summary>「只显示 ≥5 秒」的配置键名。</summary>
 	private const string OnlyLongKey = "only_long_timers";
 
-	/// <summary>9 类功能开关的配置键名（与 UI 节点名一一对应）。</summary>
+	/// <summary>9 类功能开关的**旧 user:// cfg** 键名（v1.24.0 起降级为兜底/兼容旧用户）。</summary>
 	private static readonly string[] FeatureKeys =
 	{
 		"feature_load", "feature_obstacle", "feature_obstaclehp",
 		"feature_spawn", "feature_othertimer", "feature_growth", "feature_produce",
 		"feature_combat", "feature_level",
 	};
+
+	/// <summary>
+	/// 9 类功能开关在**宿主配置**（mod.json 的 settings）里的键名 —— 下标与
+	/// <see cref="FeatureKeys"/> / GetFeatureValue / SetFeatureValue **一一对应**（0..8）。
+	///
+	/// ★ v1.24.0（用户反馈「战斗设置页里的开关不保存，重进关卡又变回配置页的值」）：
+	///   此前战斗页 11 个开关只写 user://HealthCooldownLine.cfg，宿主配置一个字节都没落盘；
+	///   而 LoadEnabled()/RefreshSwitches() 会在启动与每次配置变更时用**宿主配置值**覆盖内存
+	///   ⇒ 战斗页的改动下次必被还原。现在控件回调**同时写宿主配置（本表键名）与 cfg**，
+	///   启动顺序改成「宿主配置优先，cfg 兜底」。
+	///   ⚠️ 键名必须与 mod.json 的 settings.key 逐字一致，否则宿主 TrySave 会整批拒绝。
+	/// </summary>
+	private static readonly string[] FeatureHostKeys =
+	{
+		"showLoad", "showObstacle", "showObstacleHp",
+		"showSpawn", "showOtherTimer", "showGrowth", "showProduce",
+		"showCombat", "showLevel",
+	};
+
+	/// <summary>宿主配置里 11 个战斗页开关的键名（总开关 / 只显示≥5秒 / 9 类功能）。</summary>
+	private const string HostKeyEnabled = "enabled";
+	private const string HostKeyOnlyLong = "only_long_timers";
+
+	/// <summary>宿主配置是否成功读到了开关（true ⇒ 不再用 user:// cfg 覆盖）。</summary>
+	private bool _hostSwitchesLoaded;
 	private bool _configFaultReported;
 	private bool _checkBoxFaultReported;
 	private bool _checkBoxReadyReported;
@@ -941,6 +966,15 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 			if (down && !_hotkeyPrev)
 			{
 				_enabled = !_enabled;
+				// ★ v1.24.0：快捷键与勾选框走**同一条持久化**，否则"按一次 H 就永久改状态"
+				//   但重启后又变回去 —— 玩家会当成"设置没保存"（本次用户的原始抱怨）。
+				// ⚠️ 但**配置页正开着时必须跳过写盘**：宿主配置页是「草稿 + 显式保存」机制，
+				//   页面的 XWModSettingsEditor 在打开时抓了一份 fingerprint；此时我们用 TrySave
+				//   改盘 ⇒ 玩家之后点页面「保存」会整批失败并弹「配置已被其他操作修改，请重新打开菜单」。
+				//   （实测依据：XWModToolsPanel.cs:5607 editor.TrySave(draft) + XWModSettingsService.cs:695-698）
+				//   这种情况下本次只做会话内开关，不动配置。
+				if (HostConfigPageOpen()) { Info("配置页开着 ⇒ 快捷键只切本次会话，不写盘（避免页面保存被指纹校验拒绝）。"); }
+				else { PersistSwitch(HostKeyEnabled, _enabled); }
 				Info("快捷键 " + key + " 切换 CD 显示总开关 → " + (_enabled ? "开" : "关"));
 				// 同步游戏内的勾选框（若存在），避免界面与状态不一致
 				try
@@ -974,27 +1008,35 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	}
 
 
-	private void RefreshSwitches(XWModRuntimeContext context)
+	/// <summary>
+	/// 从**宿主配置**重读 11 个战斗页开关。返回 true = 至少读到一个宿主值
+	/// （宿主配置可用 ⇒ 调用方**不得**再用 user:// cfg 覆盖）。
+	/// ★ v1.24.0：返回值即"宿主配置可用性"，启动顺序靠它决定是否走 cfg 兜底。
+	/// </summary>
+	private bool RefreshSwitches(XWModRuntimeContext context)
 	{
+		bool any = false;
 		bool? r;
-		r = TryReadSwitch(context, "enabled");          if (r.HasValue) { _enabled = r.Value; }
-		r = TryReadSwitch(context, "showLoad");         if (r.HasValue) { _showLoad = r.Value; }
-		r = TryReadSwitch(context, "showObstacle");     if (r.HasValue) { _showObstacle = r.Value; }
-		r = TryReadSwitch(context, "showObstacleHp");   if (r.HasValue) { _showObstacleHp = r.Value; }
-		r = TryReadSwitch(context, "showSpawn");        if (r.HasValue) { _showSpawn = r.Value; }
-		r = TryReadSwitch(context, "showOtherTimer");   if (r.HasValue) { _showOtherTimer = r.Value; }
+		r = TryReadSwitch(context, HostKeyEnabled);     if (r.HasValue) { _enabled = r.Value; any = true; }
+		r = TryReadSwitch(context, "showLoad");         if (r.HasValue) { _showLoad = r.Value; any = true; }
+		r = TryReadSwitch(context, "showObstacle");     if (r.HasValue) { _showObstacle = r.Value; any = true; }
+		r = TryReadSwitch(context, "showObstacleHp");   if (r.HasValue) { _showObstacleHp = r.Value; any = true; }
+		r = TryReadSwitch(context, "showSpawn");        if (r.HasValue) { _showSpawn = r.Value; any = true; }
+		r = TryReadSwitch(context, "showOtherTimer");   if (r.HasValue) { _showOtherTimer = r.Value; any = true; }
 		// ★ v1.21.0：补齐 mod.json 此前缺失的 5 个开关（代码一直支持，配置页漏暴露）
-		r = TryReadSwitch(context, "showGrowth");       if (r.HasValue) { _showGrowth = r.Value; }
-		r = TryReadSwitch(context, "showProduce");      if (r.HasValue) { _showProduce = r.Value; }
-		r = TryReadSwitch(context, "showCombat");       if (r.HasValue) { _showCombat = r.Value; }
-		r = TryReadSwitch(context, "showLevel");        if (r.HasValue) { _showLevel = r.Value; }
-		r = TryReadSwitch(context, "only_long_timers"); if (r.HasValue) { _onlyLongTimers = r.Value; }
+		r = TryReadSwitch(context, "showGrowth");       if (r.HasValue) { _showGrowth = r.Value; any = true; }
+		r = TryReadSwitch(context, "showProduce");      if (r.HasValue) { _showProduce = r.Value; any = true; }
+		r = TryReadSwitch(context, "showCombat");       if (r.HasValue) { _showCombat = r.Value; any = true; }
+		r = TryReadSwitch(context, "showLevel");        if (r.HasValue) { _showLevel = r.Value; any = true; }
+		r = TryReadSwitch(context, HostKeyOnlyLong);    if (r.HasValue) { _onlyLongTimers = r.Value; any = true; }
+		return any;
 	}
 
 	private static void OnSettingsChanged(System.Collections.Generic.IReadOnlyList<string> keys) { }
 
 public void Initialize(XWModRuntimeContext context)
 	{
+			_context = context;   // ★ v1.24.0：提前赋值（控件回调/保存助手要它）
 			try { SponsorQrRoot = context.PackageRoot; } catch { }
 			try
 			{
@@ -1007,7 +1049,12 @@ public void Initialize(XWModRuntimeContext context)
 			catch { }
 			EnableInfoLog = false;   // ★ 2026-10-14 用户要求：默认关闭所有日志（原：EnableInfoLog = ReadLogSetting(context)）
 
-			RefreshSwitches(context);   // 面板里的 7 个开关覆盖 cfg
+			// ★ v1.24.0（用户反馈：战斗设置页的开关重进关卡就变回配置页的值）——
+			//   启动顺序改为「**宿主配置优先，user://HealthCooldownLine.cfg 只兜底**」：
+			//   · 宿主配置可用（11 个键都能读到）⇒ 一切以宿主配置为准，绝不再被 cfg 覆盖；
+			//   · 只有老宿主 / 配置异常（读不到任何宿主值）时才读 cfg，保持旧用户习惯。
+			_hostSwitchesLoaded = RefreshSwitches(context);
+			if (!_hostSwitchesLoaded) { LoadEnabled(); }
 			ReadModifyPanelSetting(context);   // 是否修改「战斗选项」界面
 
 			// 快捷键：独立一条 process_frame 连接，不干扰主循环
@@ -1057,9 +1104,13 @@ public void Initialize(XWModRuntimeContext context)
 			_tree.Connect("process_frame", _tickCallable);
 			_connected = true;
 			_started = true;
-			LoadEnabled();
+			// ★ v1.24.0：**不再无条件 LoadEnabled()** —— 宿主配置读到了就以它为准，
+			//   cfg 仅在宿主配置不可用时兜底（否则这里会把战斗页刚存进宿主配置的值又盖回去）。
+			if (!_hostSwitchesLoaded) { LoadEnabled(); }
 			Info("已挂载 process_frame（每 " + ScanStride + " 帧扫一次）。倒计时显示当前："
-				+ (_enabled ? "开" : "关") + "（设置页开关或 user://HealthCooldownLine.cfg 可改）。");
+				+ (_enabled ? "开" : "关") + "（开关来自"
+				+ (_hostSwitchesLoaded ? "宿主配置（mod.json settings）" : "user://HealthCooldownLine.cfg 兜底")
+				+ "，战斗设置页里的改动会立即写回宿主配置）。");
 		}
 		catch (Exception ex)
 		{
@@ -3732,7 +3783,9 @@ public void Initialize(XWModRuntimeContext context)
 		try
 		{
 			_enabled = on;
-			SaveEnabled();
+			// ★ v1.24.0：**必须同时写宿主配置**（键 enabled，mod.json 已声明）——
+			//   否则重进关卡/配置变更时 RefreshSwitches 会把它还原成配置页的值。
+			PersistSwitch(HostKeyEnabled, on);
 			Info("倒计时显示已切换为：" + (_enabled ? "开" : "关"));
 		}
 		catch (Exception ex)
@@ -3940,7 +3993,8 @@ public void Initialize(XWModRuntimeContext context)
 		try
 		{
 			_onlyLongTimers = on;
-			SaveEnabled();
+			// ★ v1.24.0：同时写宿主配置（键 only_long_timers）
+			PersistSwitch(HostKeyOnlyLong, on);
 			Info("开关[只显示 ≥5 秒] → " + (on ? ("开（总时长低于 " + ShortTimerThresholdSeconds.ToString("0.#") + " 秒的计时器整行不显示）") : "关"));
 		}
 		catch (Exception ex)
@@ -3953,7 +4007,9 @@ public void Initialize(XWModRuntimeContext context)
 		try
 		{
 			SetFeatureValue(idx, on);
-			SaveEnabled();
+			// ★ v1.24.0：9 类功能开关同时写宿主配置（键 showLoad / showObstacle / … 见 FeatureHostKeys）
+			if (idx >= 0 && idx < FeatureHostKeys.Length) { PersistSwitch(FeatureHostKeys[idx], on); }
+			else { SaveEnabled(); }
 			Info("功能开关[" + FeatureText(idx) + "] → " + (on ? "开" : "关"));
 		}
 		catch (Exception ex)
@@ -4106,6 +4162,14 @@ public void Initialize(XWModRuntimeContext context)
 		}
 	}
 
+	/// <summary>
+	/// 读 **user://HealthCooldownLine.cfg**（**兜底路径**，v1.24.0 起不再是主持久层）。
+	/// 调用点只有两个，且都以 <see cref="_hostSwitchesLoaded"/> == false 为前提：
+	///   · Initialize（老宿主读不到宿主配置时）；
+	///   · OnAllModsLoaded / OnRuntimeSettingsChangedImpl 的兜底分支。
+	/// 顺序设计：**宿主配置 → cfg → 内置默认值**（方向不可反，反了就会出现用户报的
+	/// 「战斗页改了、重进关卡又变回配置页的值」）。
+	/// </summary>
 	private void LoadEnabled()
 	{
 		try
@@ -4136,6 +4200,11 @@ public void Initialize(XWModRuntimeContext context)
 		}
 	}
 
+	/// <summary>
+	/// 写 **user://HealthCooldownLine.cfg**（兜底/兼容旧用户，v1.24.0 起与宿主配置**同时**写）。
+	/// ⚠️ cfg 的键名（feature_load / feature_obstacle / …）与宿主配置的键名（showLoad / showObstacle / …）
+	///    **故意不同**：cfg 是老格式，别混用；宿主写入统一走 <see cref="TrySaveHostSwitch"/>。
+	/// </summary>
 	private void SaveEnabled()
 	{
 		try
@@ -4159,6 +4228,81 @@ public void Initialize(XWModRuntimeContext context)
 				Warn("保存开关配置失败（本次游戏内仍生效，重启后回到上次保存值）：" + ex.Message);
 			}
 		}
+	}
+
+	// ============================================================ 战斗设置页 → 宿主配置（v1.24.0）
+	//
+	// 用户原话：「各个 mod 在战斗设置页中的设置，不会及时保存。重新进入关卡还是默认设置
+	//            或者是配置页的设置。」
+	//
+	// 根因（宿主源码实锤，unpack/addons/ModEditor/ModSystem/）：
+	//   · XWModSettings.TrySave → XWModSettingsService.Save：逐键 TryValue 校验，
+	//     **任一键非法 ⇒ 整批不落盘**；落盘成功才 active.Apply(values, keys) → 触发 Changed；
+	//   · 本 Mod 此前**从未调用过 TrySave**：11 个开关只写 user://HealthCooldownLine.cfg，
+	//     而 RefreshSwitches() 又用宿主配置覆盖内存 ⇒ 战斗页的改动下次必被还原成
+	//     「配置页的值 / 默认值」——正是用户看到的现象。
+	//
+	// 现在的规则：控件回调 = ①宿主配置（键名与 mod.json 逐字一致，值类型必须是 bool）
+	//                       ②cfg（只为兼容旧版本，**不再压过宿主配置**）。
+
+	/// <summary>
+	/// 宿主「Mod 配置」页是否正开着（本 Mod 那一页）。
+	/// 判据：宿主给每个设置项都渲染一个 `Reset_&lt;设置键&gt;`（XWModToolsPanel.cs:4658），
+	/// 这里用本 Mod 独占的键 `showLoad` 做锚点，既准确又便宜。
+	/// ⚠️ 该页是「草稿 + 显式保存」机制且**不订阅** Settings.Changed（XWModToolsPanel 实测无订阅）
+	///   ⇒ 页面开着时任何第三方 TrySave 都会让页面的下一次保存因指纹不符而整批失败。
+	/// </summary>
+	private bool HostConfigPageOpen()
+	{
+		try
+		{
+			Node root = (_tree != null && GodotObject.IsInstanceValid(_tree)) ? _tree.Root : null;
+			if (root == null) { return false; }
+			return root.FindChild("Reset_" + FeatureHostKeys[0], true, false) != null;
+		}
+		catch { return false; }
+	}
+
+	/// <summary>
+	/// 把**一个**战斗页开关写进宿主配置（mod.json settings 里已声明的键）。
+	/// 返回 true = 已落盘（宿主同时会 Apply ⇒ Settings.Changed ⇒ 本 Mod 重读，勾选框状态自洽）。
+	///
+	/// ⚠️ 值类型必须与声明一致：bool 键给 bool；给 string/int 会被 TryValue 拒绝 ⇒ **整批**都不落盘。
+	/// ⚠️ 宿主 Save 有 `_saving` 重入锁：**绝不能在 Settings.Changed 回调里调用**（会被拒）。
+	/// ⚠️ affectsGameplay=true 的键在联机/环境确认期间会被宿主拒绝；本 Mod 的显示开关全是 false。
+	/// </summary>
+	private bool TrySaveHostSwitch(string key, bool value)
+	{
+		XWModRuntimeContext ctx = _context;
+		if (ctx == null || string.IsNullOrEmpty(key)) { return false; }
+		try
+		{
+			System.Collections.Generic.Dictionary<string, object> changes
+				= new System.Collections.Generic.Dictionary<string, object>(1);
+			changes[key] = value;
+			if (ctx.Settings.TrySave(changes, out XWModSettingsSaveResult result))
+			{
+				_hostSwitchesLoaded = true;
+				return true;
+			}
+			Warn("宿主配置保存失败（" + key + "=" + (value ? "true" : "false") + "）："
+				+ (result == null ? "无消息" : result.Message));
+		}
+		catch (Exception ex)
+		{
+			Warn("宿主配置保存异常（" + key + "，已吞）：" + ex.Message);
+		}
+		return false;
+	}
+
+	/// <summary>
+	/// 战斗设置页任一开关变化的**统一落盘入口**：先写宿主配置（真正的持久层），
+	/// 再写一遍 cfg（兜底/兼容旧用户）。两个都失败也只是"本次会话内生效"，绝不抛。
+	/// </summary>
+	private void PersistSwitch(string hostKey, bool value)
+	{
+		TrySaveHostSwitch(hostKey, value);
+		SaveEnabled();
 	}
 
 	/// <summary>角色名的安全读取（诊断日志用）。</summary>
@@ -5138,7 +5282,11 @@ public void Initialize(XWModRuntimeContext context)
 	private void OnRuntimeSettingsChangedImpl(System.Collections.Generic.IReadOnlyList<string> keys)
 	{
 		if (_context == null) { return; }
-		RefreshSwitches(_context);
+		// ★ v1.24.0：宿主配置变了 ⇒ 以宿主配置为准（这一步是"配置页改完立刻生效"的正路），
+		//   读不到（老宿主）才退回 cfg。⚠️ 本回调由宿主 Apply 触发，此时宿主 _saving=true，
+		//   **绝不能在这里 TrySave**（会被拒："不能在配置变化通知中再次保存配置"）。
+		_hostSwitchesLoaded = RefreshSwitches(_context);
+		if (!_hostSwitchesLoaded) { LoadEnabled(); }
 		ReadModifyPanelSetting(_context);
 		EnableInfoLog = false;   // ★ 2026-10-14 用户要求：默认关闭所有日志（原：EnableInfoLog = ReadLogSetting(_context)）
 		Info("配置已重读。");
