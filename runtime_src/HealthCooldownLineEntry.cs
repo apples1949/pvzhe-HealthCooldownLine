@@ -662,6 +662,11 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		= new System.Collections.Generic.HashSet<string>();
 	private readonly System.Collections.Generic.HashSet<string> _magReported
 		= new System.Collections.Generic.HashSet<string>();
+	// 磁力花盆消化 / 内卷投手弹数 的诊断去重（每角色名一次）
+	private readonly System.Collections.Generic.HashSet<string> _digestReported
+		= new System.Collections.Generic.HashSet<string>();
+	private readonly System.Collections.Generic.HashSet<string> _accumFireReported
+		= new System.Collections.Generic.HashSet<string>();
 	private readonly System.Collections.Generic.HashSet<string> _prodReported
 		= new System.Collections.Generic.HashSet<string>();
 
@@ -821,6 +826,12 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	private FieldInfo _fGrowTimer, _fGrowReach, _fGrowTimes;
 	private FieldInfo _fPerStaticTime, _fPerTimer;
 	private FieldInfo _fMagBreakTotal, _fMagBreakTimer, _fMagArmor;
+	// ★ v1.25.0：两处「角色类上的字段」（不是组件）——磁力花盆的消化计时、内卷投手的可累积弹数
+	//   （都按**角色类型**缓存，见 GetDigestFields / GetAccumFireFields）
+	private readonly System.Collections.Generic.Dictionary<Type, FieldInfo[]> _digestFieldCache
+		= new System.Collections.Generic.Dictionary<Type, FieldInfo[]>();
+	private readonly System.Collections.Generic.Dictionary<Type, FieldInfo[]> _accumFireFieldCache
+		= new System.Collections.Generic.Dictionary<Type, FieldInfo[]>();
 	private FieldInfo _fProdTimer, _fProdEffInterval, _fProdInterval, _fProdType;
 	/// <summary>IZM 血量产出的阈值游标与步长（v1.18.0 新增，见 ProduceComponent 的注释）。</summary>
 	private FieldInfo _fProdHpNext, _fProdHpNextInterval;
@@ -1081,8 +1092,13 @@ public void Initialize(XWModRuntimeContext context)
 		}
 		catch (Exception ex)
 		{
-			// 绝不能抛：抛了整包回滚
-			try { GD.PrintErr(LogPrefix + "Initialize 异常（已吞）：" + ex.Message); } catch { }
+			// 绝不能抛：抛了整包回滚。
+			// ★ v1.25.1：这里原来**无条件** GD.PrintErr（绕过了日志开关）⇒ 用户要求"去掉日志"后
+			//   这是仅剩的两处会往 godot.log 写字的漏点之一，现改为受 EnableInfoLog 控制。
+			if (EnableInfoLog)
+			{
+				try { GD.PrintErr(LogPrefix + "Initialize 异常（已吞）：" + ex.Message); } catch { }
+			}
 		}
 	}
 
@@ -1755,6 +1771,16 @@ public void Initialize(XWModRuntimeContext context)
 						{
 							continue;
 						}
+						// ★ v1.25.0：磁力花盆的 "Scan"（0.2s 轮询计时器）**不显示** ——
+						//   它是 `TowerDefensePlantMagnetPot.BatchUpdate` 用来每 0.2s 扫同格磁力系植物的
+						//   内部心跳（`_timerComponent.Run("Scan", 0.2)`），不是玩家可感知的冷却。
+						//   不排除会显示成一行永远在 0.0~0.2s 之间跳的「Scan 0.1s」噪音。
+						//   它的真正数值（消化倒计时）由 ②.8b 用角色字段单独显示。
+						//   判据双通道（类型名 or config.name）——`Scan` 这个键全库只有它用（已核对）。
+						if (key == "Scan" && IsMagnetPot(character, charName))
+						{
+							continue;
+						}
 						bool on = (e.Value is bool bv) && bv;
 						double w = Convert.ToDouble(waitDic[key]);
 						double c = (curDic != null && curDic.Contains(key))
@@ -2021,6 +2047,48 @@ public void Initialize(XWModRuntimeContext context)
 				if (CatOn(7) && bt > 0 && remM > 0 && busy && lines.Count < MaxTotalLines)
 				{
 					AddTimer(lines, "消化 " + remM.ToString("0.0") + "s", BusyColor, bt);
+				}
+			}
+		}
+		catch { }
+
+		// ②.8b 磁力花盆（TowerDefensePlantMagnetPot）的「消化」倒计时
+		//   —— 这是**角色类上的字段，不是组件**，所以上面 ②.8 的 MagnetComponent 通道永远读不到它。
+		//
+		//   ── 机制（解包源码 `HybridPark/MagnetPot/Scene/TowerDefensePlantMagnetPot.cs` 定案）──
+		//     · `private bool _digesting`            是否正在消化
+		//     · `private double _digestTimer`        剩余消化秒数（`_digestTimer -= delta * timeScale`）
+		//     · `public const double DigestTime = 20.0`   单次消化总时长（且 `StartDigest()` 里硬写
+		//       `_digestTimer = 20.0`——**不是**从 const 取的，所以总时长按字段实读、不用常量兜死）
+		//     · 触发：它每 0.2s 扫同格同阵营的磁力系植物，一旦对方 `breakDownArmor` 有效，
+		//       就调 `BreakDownOver()` 帮对方结束吸附，然后自己 `StartDigest()` 开始 20s 消化。
+		//     · 组件集只有 SlotComponent + CharacterTimerComponent（`Scan` 0.2s 轮询），
+		//       **没有 MagnetComponent** ⇒ 与磁力菇系（②.8）是两个独立机制，必须分开认。
+		//   ── 显示口径 ──
+		//     与磁力菇系的 `消化 X.Xs` 完全对齐（同词、同色、同分类 CatOn(7) 战斗辅助），
+		//     只是数据源换成角色字段：`_digesting == true` 时显示 `_digestTimer`，结束后自动消失。
+		//     总时长写 20（&gt;4.9s）⇒ 开启「只显示 ≥5 秒」也不会被误滤掉。
+		try
+		{
+			FieldInfo fDigesting, fDigestTimer;
+			GetDigestFields(character.GetType(), out fDigesting, out fDigestTimer);
+			if (fDigesting != null && fDigestTimer != null)
+			{
+				bool digesting = (fDigesting.GetValue(character) is bool dgb) && dgb;
+				double dgr = (fDigestTimer.GetValue(character) != null)
+					? Convert.ToDouble(fDigestTimer.GetValue(character)) : 0.0;
+				if (dgr < 0) { dgr = 0; }
+				if (digesting && _digestReported.Add(charName ?? "?"))
+				{
+					Info("消化[" + (charName ?? "?") + "]（角色级字段）：_digesting=" + digesting
+						+ " _digestTimer(剩余)=" + dgr.ToString("0.###")
+						+ " DigestTime(常量)=" + ReadDigestConst(character.GetType()).ToString("0.###"));
+				}
+				if (CatOn(7) && digesting && dgr > 0 && lines.Count < MaxTotalLines)
+				{
+					double total = ReadDigestConst(character.GetType());
+					if (total <= 0) { total = dgr; }
+					AddTimer(lines, "消化 " + dgr.ToString("0.0") + "s", BusyColor, total);
 				}
 			}
 		}
@@ -2734,6 +2802,53 @@ public void Initialize(XWModRuntimeContext context)
 		}
 		catch { }
 
+		// ⑤.5 内卷投手（TowerDefensePlantCabbagepultInside）的**可累积弹数**
+		//   —— 它不像加农炮/投石车那样有"弹药组件"，弹数是**角色类上的普通字段**，
+		//      由「同种植物叠在一起」的 _Ready 逻辑互相 +1 累积，所以此前完全没显示。
+		//
+		//   ── 机制（解包源码 `Other/CabbagepultInside/Scene/TowerDefensePlantCabbagepultInside.cs`）──
+		//     · `public int maxFireNum = 5;`        弹数上限（硬编码 5，不在 .tres 里）
+		//     · `public int fireNum { get; set; }`  当前一次齐射的弹数（属性，初值 1）
+		//     · `_Ready()` 里遍历 `GetNodesInGroup("PlantCabbagepultInside")`
+		//       （组名 = `config.name`，见 TowerDefenseCharacter._Ready 的 `AddToGroup(config.name)`），
+		//       给**场上每一株同种**都 `fireNum = Min(fireNum + 1, maxFireNum)`
+		//       ⇒ 场上 N 株同种，每株都被 +N-1，即 **fireNum = min(N, 5)**。
+		//       注意它是"每株各自持有"的值，不是共享池：种第 4 株时前三株也会再 +1。
+		//     · 齐射时 `FireComponent.fireNumAtOnce = true`（定义文件实读），
+		//       `FireConfiguredVolley()` 按 `Math.Max(1, fireNum)` 连发那么多个白菜；
+		//       弹道高度 `catapultHeight + (i - (fireNum-1)/2) * 120`（PrepareVolleyProjectileData）。
+		//   ── 显示口径 ──
+		//     `弹数 N/M`（N=当前齐射发数，M=maxFireNum 上限，N 从 1 起）。
+		//     颜色：N==M 用就绪绿（已满级），否则青蓝（还能继续叠）。
+		//     归"战斗辅助"类 CatOn(7)（与咀嚼/消化/剩弹同一类）。
+		try
+		{
+			FieldInfo fFireNumProp, fMaxFireNum;
+			GetAccumFireFields(character.GetType(), out fFireNumProp, out fMaxFireNum);
+			// ★★ 识别判据必须是**两个字段同时存在**：
+			//   `_fireNum` 这个名字在游戏里有 **101 个植物类**都有（几乎每个射手/投手都有一份
+			//   `[Export] fireNum` 属性镜像到 FireComponent.fireNum）—— 只认它会把所有射手的
+			//   "齐射发数"都当成弹数显示出来（普通豌豆射手 `_fireNum = 2`，白白多一行）。
+			//   而 **`maxFireNum` 全库只有 `TowerDefensePlantCabbagepultInside` 有**（mdprobe 实查）
+			//   ⇒ 用"`_fireNum` + `maxFireNum` 成对出现"当身份判据，天然不误伤。
+			if (fFireNumProp != null && fMaxFireNum != null)
+			{
+				int cur = ReadIntField(fFireNumProp, character, 1);
+				int cap = ReadIntField(fMaxFireNum, character, 0);
+				if (_accumFireReported.Add(charName ?? "?"))
+				{
+					Info("弹数[" + (charName ?? "?") + "]（角色级字段）：fireNum=" + cur
+						+ " maxFireNum=" + cap);
+				}
+				if (CatOn(7) && cur > 0 && lines.Count < MaxTotalLines)
+				{
+					string txt = (cap > 0) ? ("弹数 " + cur + "/" + cap) : ("弹数 " + cur);
+					AddLine(lines, txt, (cap > 0 && cur >= cap) ? ReadyColor : BusyColor);
+				}
+			}
+		}
+		catch { }
+
 		// ⑥ 缠绕海草抓取数（TanglekelpComponent）——海草系 6 个（Tanglekelp/DoomTanglekelp/
 		//   TanglekelpH/PlanternTanglekelp/InsaniKelp/僵尸 Snorkle）
 		try
@@ -3214,8 +3329,19 @@ public void Initialize(XWModRuntimeContext context)
 				if (_fireBaseline.TryGetValue(charName ?? "?", out bv2))
 				{
 					// 弹数变化（多发加成）——寒冰杨桃实测 1→2
+					// ★ v1.25.0：**可累积弹数型角色（内卷投手）跳过这条增量行** ——
+					//   它的 FireComponent.fireNum 是角色字段 `fireNum` 的镜像，叠种后同样会 +1，
+					//   若不跳过就会与 ⑤.5 的绝对值行（`弹数 3/5`）同时出现，一株植物两行弹数。
+					//   判据与 ⑤.5 一致：`_fireNum` + `maxFireNum` 成对存在。
+					bool accumFireRole = false;
+					try
+					{
+						accumFireRole = (FindFieldAlong(character.GetType(), "_fireNum") != null)
+							&& (FindFieldAlong(character.GetType(), "maxFireNum") != null);
+					}
+					catch { }
 					int fnDelta = lastFireNum - (int)bv2[3];
-					if (fnDelta > 0)
+					if (fnDelta > 0 && !accumFireRole)
 					{
 						AddLine(lines, "弹数 +" + fnDelta, ReadyColor);
 					}
@@ -4361,7 +4487,136 @@ public void Initialize(XWModRuntimeContext context)
 	}
 
 	/// <summary>
-	/// 读 Godot 的 float 数组（兼容 Godot.Collections.Array&lt;float&gt; / IList&lt;float&gt; / 非泛型枚举）。
+	/// 是不是**磁力花盆**（`TowerDefensePlantMagnetPot`，杂交乐园）。
+	/// 双通道判据：① 角色类名含 `MagnetPot`（mdprobe 实查：全库只此一个类）；
+	///            ② config.name == "PlantMagnetPot"（解包实读，全库只此一处）。
+	/// 任一路命中即可 —— 这样即使将来重命名/换脚本也能兜住。
+	/// </summary>
+	private static bool IsMagnetPot(TowerDefenseCharacter character, string charName)
+	{
+		try
+		{
+			if (character != null && character.GetType().Name.IndexOf("MagnetPot", StringComparison.Ordinal) >= 0)
+			{
+				return true;
+			}
+		}
+		catch { }
+		return charName != null && charName.IndexOf("MagnetPot", StringComparison.Ordinal) >= 0;
+	}
+
+	/// <summary>
+	/// **磁力花盆的消化字段**（`TowerDefensePlantMagnetPot` 的角色级字段，沿类型链找，按类型缓存）：
+	/// `_digesting`（bool，是否正在消化）/ `_digestTimer`（double，剩余秒数）。
+	///
+	/// ⚠️ 为什么不是组件：该植物的 ComponentSet 只有 `SlotComponent` + `CharacterTimerComponent`
+	///   （`Scan` 0.2s 轮询），**没有 MagnetComponent** ⇒ ②.8 那条 `GetRuntime&lt;MagnetComponent&gt;`
+	///   通道结构上就取不到它，这正是"磁力花盆不显示消化时间"的根因。
+	/// ⚠️ 两个字段都是 `private`，必须带 NonPublic；`FindFieldAlong` 已含 Static 位（第六类坑）。
+	/// </summary>
+	private void GetDigestFields(Type t,
+		out FieldInfo fDigesting, out FieldInfo fDigestTimer)
+	{
+		FieldInfo[] arr;
+		if (_digestFieldCache.TryGetValue(t, out arr))
+		{
+			fDigesting = arr[0]; fDigestTimer = arr[1];
+			return;
+		}
+		fDigesting = FindFieldAlong(t, "_digesting");
+		fDigestTimer = FindFieldAlong(t, "_digestTimer");
+		// 第三格顺手缓存 `DigestTime` 常量字段（每帧别重复走类型链找）
+		FieldInfo fConst = FindFieldAlong(t, "DigestTime");
+		_digestFieldCache[t] = new FieldInfo[] { fDigesting, fDigestTimer, fConst };
+	}
+
+	/// <summary>
+	/// 磁力花盆的消化**总时长**：读类上的 `public const double DigestTime`（= 20.0）。
+	/// `const` 是编译期字面量 ⇒ 必须走 `GetRawConstantValue()` 才是稳定通道
+	/// （虽然实测 `GetValue` 对 `const double` 也返回值，但不依赖该行为）。
+	/// 例外：`StartDigest()` 里实际是硬写 `_digestTimer = 20.0`，并未读该常量；
+	/// 若将来两者分叉，以**常量**为准（它是官方声明的"消化时长"语义值）。
+	/// </summary>
+	private double ReadDigestConst(Type t)
+	{
+		try
+		{
+			FieldInfo[] arr;
+			FieldInfo fi;
+			if (_digestFieldCache.TryGetValue(t, out arr) && arr.Length >= 3)
+			{
+				fi = arr[2];
+			}
+			else
+			{
+				fi = FindFieldAlong(t, "DigestTime");
+			}
+			if (fi != null && fi.IsLiteral)
+			{
+				object raw = fi.GetRawConstantValue();
+				if (raw != null) { return Convert.ToDouble(raw); }
+			}
+		}
+		catch { }
+		return 0.0;
+	}
+
+	/// <summary>
+	/// **可累积弹数型角色**的字段（`TowerDefensePlantCabbagepultInside`，按类型缓存）：
+	/// `fireNum`（属性，当前齐射发数）/ `maxFireNum`（public int 字段，上限）。
+	///
+	/// ⚠️ `fireNum` 在元数据里是**属性**（`get_fireNum`/`set_fireNum`），它的私有备份字段
+	///   实测叫 **`_fireNum`**（不是编译器生成风格的 `<fireNum>k__BackingField`）——
+	///   手写 `public int fireNum { get => _fireNum; set => _fireNum = value; }` 的结果。
+	///   ⇒ 查找顺序：`<fireNum>k__BackingField` → `_fireNum` → `fireNum`（字段名兜底）。
+	///   `maxFireNum` 是普通 public 字段，直接读。
+	/// </summary>
+	private void GetAccumFireFields(Type t,
+		out FieldInfo fFireNum, out FieldInfo fMaxFireNum)
+	{
+		FieldInfo[] arr;
+		if (_accumFireFieldCache.TryGetValue(t, out arr))
+		{
+			fFireNum = arr[0]; fMaxFireNum = arr[1];
+			return;
+		}
+		// ★ 实测（mdprobe 读 PlantsVsZombies.dll 元数据）：该类**没有**
+		//   `<fireNum>k__BackingField`，手写备份字段叫 **`_fireNum`**
+		//   （字段表：`maxFireNum : Int32` / `_fireNum : Int32` / 属性 `fireNum` + get_/set_）。
+		//   ⇒ 依次尝试三条命名，全部带 NonPublic（`_fireNum` 是 private）。
+		fFireNum = FindFieldAlong(t, "<fireNum>k__BackingField");
+		if (fFireNum == null)
+		{
+			fFireNum = FindFieldAlong(t, "_fireNum");
+		}
+		if (fFireNum == null)
+		{
+			fFireNum = FindFieldAlong(t, "fireNum");
+		}
+		fMaxFireNum = FindFieldAlong(t, "maxFireNum");
+		_accumFireFieldCache[t] = new FieldInfo[] { fFireNum, fMaxFireNum };
+	}
+
+	/// <summary>
+	/// 读一个 int 值（字段：普通 / static / const 字面量都兼容），取不到返回 fallback。
+	/// 用 `int.MinValue` 当"读失败"哨兵，再转成调用方给的 fallback ——
+	/// 这样"真的读到 0"与"没读到"不会混淆（等级/弹数都可能是 0）。
+	/// </summary>
+	private static int ReadIntField(FieldInfo fi, object instance, int fallback)
+	{
+		if (fi == null)
+		{
+			return fallback;
+		}
+		int v = ReadConstOrFieldInt(fi, instance, int.MinValue);
+		if (v != int.MinValue)
+		{
+			return v;
+		}
+		return fallback;
+	}
+
+
 	/// ★ 定案（17:32 日志 + GodotSharp 元数据实锤，2026-09-26）：
 	///   **`Godot.Collections.Array&lt;T&gt;` 的基类是 Object ——与 `Godot.Collections.Array`
 	///   没有继承关系**！所以 `as Godot.Collections.Array` 恒 null

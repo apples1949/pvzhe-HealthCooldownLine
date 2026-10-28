@@ -1,5 +1,10 @@
 # 血条·装填倒计时（HealthCooldownLine）
 
+> ✅ **v1.25.1（2026-10-28，按用户要求）**：**正式版不再写任何日志**（`godot.log` 里本 Mod 零输出）。
+
+> ✅ **v1.25.0（2026-10-28，按用户要求）**：**磁力花盆现在会显示消化倒计时**，
+> 并新增**内卷投手弹数**显示。两条都写进下面的表格（②.8b / ⑤.5）。
+
 > ⚠️ **v1.23.0（2026-10-24，按用户要求）**：**「障碍物血量」不再显示雪球的血量** ——
 > 雪球（`TowerDefenseItemSnowBall`，雪球射手生成的滚球道具）与同族滚球道具（足球）
 > 因挂了 `BowlingComponent` 被排除出「障碍物」判定（细节见下文 v1.23.0 条目）。
@@ -21,10 +26,12 @@
 | ②.6 | **长大**（阳光菇系 9 个角色） | character.grow_up | `长大 12.0s`（青蓝，分阶段时按当前阶段时长） |
 | ②.7 | **周期区域事件**（冰坚果/伞火把） | character.periodic_area_event | `触发 0.4s`（青蓝，提醒：冰坚果周期仅 0.5s，数字快速循环） |
 | ②.8 | **磁力消化**（磁力菇系 9 个） | character.magnet | `消化 20.1s`（青蓝，仅吸到护甲消化期间显示） |
+| ②.8b | **磁力花盆消化**（v1.25.0，角色级字段） | `_digesting` / `_digestTimer` | `消化 12.3s`（青蓝，`_digesting` 期间显示，单次 20s） |
 | ②.9 | **阳光/金币/卡包产出**（29 个产出定义） | character.produce | `阳光 8.2s` / `金币 6.0s`（青蓝，按 produceType 映射） |
 | ③ | 土豆雷准备出土 | character.potato | `准备 8.3s` / `准备 就绪`（绿） |
 | ④ | 篮球剩余投抛数 | character.bowling | `剩余 3 发`（绿/灰） |
 | ⑤ | 投石车剩弹 | character.catapult | `剩弹 2/3`（绿/灰） |
+| ⑤.5 | **内卷投手弹数**（v1.25.0，角色级字段） | `fireNum` / `maxFireNum` | `弹数 3/5`（青蓝，满 5 变绿） |
 | ⑥ | **坑洞消失倒计时**（角色级字段，先于组件链判定） | dieDownTimer | `消失 12.4s`（青蓝） |
 
 
@@ -36,6 +43,8 @@
 
 | 版本 | 变更 |
 | --- | --- |
+| **1.25.1** | **去掉日志**：正式版一行都不再写 `godot.log`（细节见文末「v1.25.1 日志全静默」）|
+| **1.25.0** | **修复「磁力花盆不显示消化时间」+ 新增「内卷投手弹数」**（细节见文末「v1.25.0 两条新显示的数据源定案」）|
 | **1.23.0** | **「障碍物血量」不再显示雪球的血量** —— 雪球是「雪球射手」生成的滚球道具（按下即滚出去撞人，打满 5 次 / 出界 / 入水消失），属于武器不是障碍物；它继承了通用角色组件集（自带 `HurtComponent`）、类名又不含 `Plant`/`Zombie`，被「广义障碍物」判定误判。现按 **`BowlingComponent`（滚球机制）** 排除滚球类道具（雪球 `ItemSnowBall` + 同族足球 `ItemSoccerBall`），并加类名兜底；垃圾桶/墓碑/炸弹/符石等真障碍物血量显示不变 |
 | **1.21.2** | 新增：魅惑补丁（用户称魅惑菇王）专属显示——「生成僵尸 X.Xs」（30s 周期）+「可啃 N 次」（最多 3 次，啃满自毁）。 |
 | **1.20.1** | 修复泡椒罐子「装填 N/4」恒显示 `0/4`、且「发射 X.Xs」不出现 —— 根因是 `jalaList` / `timerList` 是 `Godot.Collections.Array<T>`，**它与非泛型 `Array` 没有继承关系**，原先 `is Godot.Collections.Array` **恒 false**（同项目 v1.7.1 踩过的**同一个坑**）；现改走「反射读 `Count` + 泛型 `as` 精确匹配」 |
@@ -552,3 +561,89 @@ ModsCache 已改名失效。
 必须加 **`-p:UseSharedCompilation=false`**（关掉编译服务器）才能跑完；
 即便这样收尾进程仍可能挂住，此时**直接用 `obj/Release/JTYHealthCooldownLine.dll` 拷到 `bin/Release/`**
 （md5 与 obj 一致）再跑 `build_pmod.py` 即可。
+
+---
+
+## v1.25.0 两条新显示的数据源定案（2026-10-28）
+
+> 两条都是「**角色类上的字段**」，不是组件 —— 这正是此前一条都不显示的根因。
+> 判据全部来自**解包源码 + PlantsVsZombies.dll 元数据实查**，并用离线反射闸门
+> `tools/reflect_gate/`（对着真实程序集跑 Mod 里那套 `FindFieldAlong`）逐项验证过。
+
+### 1) 磁力花盆 `TowerDefensePlantMagnetPot` —— 消化倒计时
+
+| 事实 | 值 / 出处 |
+|---|---|
+| 触发 | 每 0.2s（`CharacterTimerComponent` 的 `Scan` 键）扫同格同阵营的磁力系植物；对方 `breakDownArmor` 有效 ⇒ 调它的 `BreakDownOver()`，自己 `StartDigest()` |
+| 计时字段 | `private double _digestTimer`（**剩余**秒数，`BatchUpdate` 里 `_digestTimer -= delta * timeScale`） |
+| 状态字段 | `private bool _digesting` |
+| 总时长 | `public const double DigestTime = 20.0`（但 `StartDigest()` 里是**硬写** `_digestTimer = 20.0`，不读常量） |
+| **为什么旧代码读不到** | 它的 ComponentSet 只有 `SlotComponent` + `CharacterTimerComponent`，**没有 `MagnetComponent`** ⇒ ②.8 那条 `GetRuntime<MagnetComponent>("character.magnet")` 通道**结构上**就取不到它 |
+| 组件集文件 | `HybridPark/MagnetPot/Scene/TowerDefensePlantMagnetPotComponentSet.tres`（实读） |
+
+显示：`消化 X.Xs`（青蓝，`_digesting` 为真且 `_digestTimer > 0` 时），归「战斗辅助」类 `CatOn(7)`；
+总时长传 `DigestTime`(20) ⇒ 开启「只显示 ≥5 秒」不会被误滤。
+
+**顺带修掉的噪音**：该植物的 `Scan` 是 0.2s 内部轮询计时器，原来会在 ② 段显示成一行
+永远在 0.0~0.2s 之间跳的 `Scan 0.1s`；现按 `IsMagnetPot()`（类型名 / `config.name` 双通道，
+全库唯一）显式跳过。`Scan` 这个键全库也只有它用。
+
+### 2) 内卷投手 `TowerDefensePlantCabbagepultInside` —— 可累积弹数
+
+| 事实 | 值 / 出处 |
+|---|---|
+| 字段 | `private int _fireNum`（经属性 `fireNum` 暴露，**没有**编译器生成的 `<fireNum>k__BackingField`）+ `public int maxFireNum = 5` |
+| 累积机制 | `_Ready()` 里遍历 `GetNodesInGroup("PlantCabbagepultInside")`（组名 = `config.name`，见 `TowerDefenseCharacter._Ready` 的 `AddToGroup(config.name)`），给**场上每一株同种**都 `fireNum = Min(fireNum + 1, maxFireNum)` |
+| 等效结果 | 场上 N 株同种 ⇒ **每株 fireNum = min(N, 5)**；不是共享池，种第 4 株时前三株也会再 +1 |
+| 齐射 | 定义里 `fireNumAtOnce = true` ⇒ `FireConfiguredVolley()` 按 `Math.Max(1, fireNum)` 连发；`PrepareVolleyProjectileData` 把弹道高度按 `catapultHeight + (i - (fireNum-1)/2) * 120` 排成扇形 |
+| 存档 | `ExportVariantSave` 会存 `fireNum` / `maxFireNum`，读档后仍按上表规则重建 |
+
+显示：`弹数 N/5`（N 达到上限 5 时变绿，否则青蓝），归「战斗辅助」类 `CatOn(7)`。
+
+**识别判据为什么必须是两个字段成对**：`_fireNum` 这个名字在游戏里有 **101 个植物类**都有
+（几乎每个射手/投手都有一份 `[Export] fireNum` 属性镜像到 `FireComponent.fireNum`），
+只认它会把普通豌豆射手的"齐射 2 发"也显示出来；
+而 **`maxFireNum` 全库只有 `TowerDefensePlantCabbagepultInside` 一个角色类有**（mdprobe 实查），
+所以用"`_fireNum` + `maxFireNum` 成对存在"当身份判据，天然不误伤。
+同时 ⑨ 段的「弹数 +N」增量行对它**跳过**（否则一株植物会同时出现 `弹数 3/5` 与 `弹数 +2` 两行）。
+
+### 离线验证（可重跑）
+
+```
+mods/HealthCooldownLine/tools/reflect_gate/          # 反射闸门（对着真实 PlantsVsZombies.dll）
+  dotnet build -c Release
+  dotnet bin/Release/net9.0/reflect_gate.dll "<游戏目录含 PlantsVsZombies.dll>"
+  # => 磁力花盆 _digesting/_digestTimer/DigestTime 全部命中；内卷投手 _fireNum/maxFireNum 命中；
+  #    角色类里带 maxFireNum 的类型数 = 1
+```
+
+### 产物（本轮装机）
+
+- `runtime_src/bin/Release/JTYHealthCooldownLine.dll` md5 `05f4c5f7be9f1ba5d93d7e75457d7573`
+- `dist/HealthCooldownLine.pmod` 143276 字节，与装机包**字节一致**
+- 装机到 `%APPDATA%\Godot\app_userdata\植物大战僵尸杂交版\Mods\HealthCooldownLine.pmod`
+- 已删 `ModsCache/healthcooldowndisplay`（强制重新解包）与 `Mods/mod_boot_journal.json`
+  （上次中断残留的 `inProgress: true` 会让下次启动进零 Mod 安全模式）
+
+---
+
+## v1.25.1 日志全静默（2026-10-28）
+
+用户要求"去掉日志" ⇒ 正式版**不再往 `godot.log` 写任何一行**。审计后共发现三处会写字的通道，全部关掉：
+
+| # | 位置 | 原行为 | 现行为 |
+|---|---|---|---|
+| 1 | `HealthCooldownLineEntry.Info/Warn` | 已受 `EnableInfoLog` 控制（2026-10-14 起默认 false） | 不变 |
+| 2 | `HealthCooldownLineEntry.Initialize` 的 catch | **无条件** `GD.PrintErr`（绕过了开关） | 受 `EnableInfoLog` 控制 |
+| 3 | 共享组件 `SponsorQrInjector` 的「收款码已插入」+ `WarnOnce` 告警 | **无条件** `GD.Print` / `GD.PrintErr`（**17 个 Mod 共用**，每个 Mod 各打一行） | 新增常量 `DiagLog = false` 统一控制 |
+
+`SponsorQrInjector` 里另有两个性能探针，本来就是关的（`DiagFrameCost = false`、`DiagWalkCost = false`），未改动。
+
+**恢复取证的办法**（诊断代码与探针逻辑**完整保留**，一行没删）：
+- 本 Mod 的 `Info/Warn`：把 `HealthCooldownLineEntry.Initialize` 里 `EnableInfoLog = false;` 改成 `ReadLogSetting(context)`，
+  再在 Mod 配置页把「输出诊断日志」(`enableLog`) 打开；
+- 共享组件的两处：把 `mods/SponsorQrInjector.cs` 的 `DiagLog` 改成 `true`，然后**重编所有 17 个 Mod**
+  （共享文件改动不会自动触发各 Mod 重编译，见技能文档「共享组件不触发增量重编译」）。
+
+**产物**：`runtime_src/bin/Release/JTYHealthCooldownLine.dll` md5 `b18da273f1ff493600a42b78cece42c2`；
+`dist/HealthCooldownLine.pmod` 143563 字节，与装机包字节一致。
