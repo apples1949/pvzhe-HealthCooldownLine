@@ -4,3 +4,4 @@ obj/
 *.out
 *.err
 *.exit
+.cache_lanzou/
