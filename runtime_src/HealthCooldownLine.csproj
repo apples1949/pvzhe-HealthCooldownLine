@@ -28,9 +28,9 @@
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.25.2</Version>
+    <AssemblyVersion>1.25.2.0</AssemblyVersion>
+    <FileVersion>1.25.2.0</FileVersion>
     <!--
       游戏程序集是 net9.0，本工程 target net8.0（本机 SDK 版本）⇒ 引用其传递依赖时
       会报一屏 MSB3277「版本冲突」警告。它们不影响产物，但会让构建日志膨胀、
