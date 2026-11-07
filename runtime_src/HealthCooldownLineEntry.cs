@@ -36,7 +36,12 @@ using PVZHE.ModEditor.ModSystem;
 /// 用反射取字段值 + Convert.ToDouble，编译期零假设，运行时最多退化成「不显示」。
 /// 技能文档 §6 也提醒：反射接缝要单独加闸门（见 check_gates.cs）。
 /// </summary>
-public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
+/// ★ v1.26.0：改为 **partial** —— 僵尸专属附加行拆到 ZombieCdA.cs（A 批 16 个僵尸）/
+///   ZombieCdB.cs（B 批 15 个僵尸），由 zombie-dev-a / zombie-dev-b 分别维护，
+///   三者是**同一个类**的不同部分（同一程序集），因此本文件里所有 private 成员
+///   （AddLine / AddTimer / CatOn / ReadyColor / MaxTotalLines / FindFieldAlong …）
+///   在另两个文件里**直接可用**，不需要也不会允许重复定义。
+public sealed partial class HealthCooldownLineEntry : IXWModRuntimeEntry
 {
 	// 赞助码注入器（SponsorQrInjector.cs 共享组件）用的包根缓存
 	internal static string SponsorQrRoot = null;
@@ -557,6 +562,37 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// </summary>
 	private bool _onlyLongTimers;
 
+	// ============================================================ v1.26.0「显示僵尸冷却」
+	//
+	// 用户需求：僵尸血条上也要显示**该僵尸自己的冷却/倒计时**（毁灭菇僵尸爆炸倒计时、
+	// 天使僵尸复活间隔与重生后无敌时间、磁场僵尸磁力开启倒计时…）。
+	//
+	// 为什么单独一个开关，而不是并进既有的 9 类（CatOn(0..8)）：
+	//   那 9 类管的是「所有角色都走得通」的通用通道（加农炮/命名计时器/咀嚼/产出…），
+	//   类别语义是"这条通道显示什么"；而僵尸 CD 是**逐个僵尸手写**的专属分支
+	//   （ZombieCdA.cs 16 个 + ZombieCdB.cs 15 个，共 31 个），用户明确要求能一键关掉，
+	//   所以给它一个独立开关 + 独立勾选框。
+	//
+	/// <summary>
+	/// 「显示僵尸冷却」—— 僵尸专属附加行的开关（默认开）。
+	///
+	/// **优先级**：总开关 <see cref="_enabled"/> &gt; 本开关 &gt; 「只显示 ≥5 秒」过滤。
+	///   · `_enabled` = false ⇒ 整个血条 CD 一行都不显示（本开关无意义，代码里根本走不到）；
+	///   · 本开关 = false ⇒ **只**不显示僵尸附加行，其他角色（植物/障碍物/加农炮…）照常；
+	///   · 本开关 = true ⇒ 僵尸附加行照常显示，并继续受「只显示 ≥5 秒」按总时长过滤。
+	/// 实现位置：<see cref="TryCollectZombieCdLines"/>（TryCollectInfo 末尾的唯一调用点）。
+	/// </summary>
+	private bool _showZombieCd = true;
+
+	/// <summary>「显示僵尸冷却」在**宿主配置**（mod.json settings）里的键名 —— 必须逐字一致，否则 TrySave 整批拒绝。</summary>
+	private const string HostKeyZombieCd = "showZombieCd";
+
+	/// <summary>「显示僵尸冷却」在 **user:// cfg**（兜底/兼容旧用户）里的键名。</summary>
+	private const string ZombieCdCfgKey = "feature_zombiecd";
+
+	/// <summary>「显示僵尸冷却」勾选框的节点名（幂等判断 / 状态校准用）。</summary>
+	private const string ZombieCdCheckBoxName = "ModZombieCdCheckBox";
+
 	/// <summary>
 	/// 「只显示 ≥5 秒」的阈值（秒）。
 	///
@@ -1040,6 +1076,8 @@ public sealed class HealthCooldownLineEntry : IXWModRuntimeEntry
 		r = TryReadSwitch(context, "showCombat");       if (r.HasValue) { _showCombat = r.Value; any = true; }
 		r = TryReadSwitch(context, "showLevel");        if (r.HasValue) { _showLevel = r.Value; any = true; }
 		r = TryReadSwitch(context, HostKeyOnlyLong);    if (r.HasValue) { _onlyLongTimers = r.Value; any = true; }
+		// ★ v1.26.0「显示僵尸冷却」（独立开关，不属于 9 类）
+		r = TryReadSwitch(context, HostKeyZombieCd);    if (r.HasValue) { _showZombieCd = r.Value; any = true; }
 		return any;
 	}
 
@@ -3407,6 +3445,216 @@ public void Initialize(XWModRuntimeContext context)
 			}
 		}
 		catch { }
+
+		// ★★ v1.26.0：**僵尸专属附加行** —— 全文件唯一调用点。
+		//   31 个僵尸的分支分别写在 ZombieCdA.cs（A 批）/ ZombieCdB.cs（B 批），
+		//   这里是它们进入显示管线的唯一入口（受「显示僵尸冷却」开关门控，
+		//   非僵尸角色 / 开关关闭 / 行数已满 时直接返回，零开销）。
+		TryCollectZombieCdLines(cm, character, charName, lines);
+	}
+
+	// ================================================================ v1.26.0 僵尸专属附加行扩展点
+	//
+	// ── 设计（为什么用 partial 方法而不是虚函数/委托）────────────────────────
+	//   · 本类是 sealed 的运行时入口，玩家侧不能派生，虚函数没有落点；
+	//   · 委托/事件需要注册时机与空判，且会引入额外的静态状态与生命周期问题；
+	//   · **partial 方法**是零成本抽象：有实现就内联调用，没实现（例如某人还没动工）
+	//     编译器直接把调用点删掉 ⇒ **a/b 任一方没写完都不会导致编译失败**，也不会互相阻塞。
+	//   · 两个实现点**按文件分开**（A / B 各一个），避免两个人抢同一个方法导致重复定义。
+	//
+	/// <summary>
+	/// 僵尸附加行的 **A 批实现点**（ZombieCdA.cs，zombie-dev-a 维护：16 个僵尸）。
+	/// 只在 `character` 是**僵尸类或骨堆类**、且「显示僵尸冷却」开关打开、且行数未满时被调用。
+	/// **实现规则见 `研究-僵尸CD\00-框架与契约.md`**。
+	/// </summary>
+	partial void CollectZombieCdLinesA(ComponentManager cm, TowerDefenseCharacter character,
+		string charName, System.Collections.Generic.List<(string Text, Color Color, double Total)> lines);
+
+	/// <summary>
+	/// 僵尸附加行的 **B 批实现点**（ZombieCdB.cs，zombie-dev-b 维护：15 个僵尸）。
+	/// 语义与 A 完全相同，只是拆文件避免冲突。
+	/// </summary>
+	partial void CollectZombieCdLinesB(ComponentManager cm, TowerDefenseCharacter character,
+		string charName, System.Collections.Generic.List<(string Text, Color Color, double Total)> lines);
+
+	/// <summary>
+	/// 「僵尸附加行」总闸门：类型判定 + 开关门控 + 行数上限，然后分别调用 A / B 两个实现点。
+	///
+	/// **不变量**（给 a/b 的保证）：
+	///   1. 进到这里时 `character` 是**「僵尸类」或「骨堆类」**——
+	///      最常见是 `TowerDefenseZombie` 及其子类（可以直接强转）；
+	///      ★ v1.26.1 例外：`TowerDefenseSkeleton`（骷髅伽刚特尔的骨堆，30 秒复活计时）
+	///      继承链是 `TowerDefenseSkeleton : TowerDefenseGravestone : TowerDefenseCharacter`，
+	///      **不是**僵尸 ⇒ **不要**无条件 `(TowerDefenseZombie)character` 强转，
+	///      判断身份请用 `charName` / `character.GetType().Name`（这也是 a/b 现在的写法）。
+	///   2. 进到这里时 `_showZombieCd == true`，且总开关 `_enabled == true`（外层已判）；
+	///   3. `lines` 非 null 且 `lines.Count < MaxTotalLines`，但**你们自己追加后要自己判**
+	///      `lines.Count < MaxTotalLines`，否则会超出 6 行 Label 的容量（多出的行不显示）；
+	///   4. 异常已被吞：你们的实现里**也请**整体 try/catch，别让一个僵尸把整条管线带崩。
+	/// </summary>
+	private void TryCollectZombieCdLines(ComponentManager cm, TowerDefenseCharacter character,
+		string charName, System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
+	{
+		try
+		{
+			if (lines == null || lines.Count >= MaxTotalLines) { return; }
+			if (!_showZombieCd || !_enabled) { return; }
+			if (!IsZombieCdHost(character, charName)) { return; }
+			if (cm == null) { return; }
+
+			try { CollectZombieCdLinesA(cm, character, charName, lines); }
+			catch (Exception ex) { WarnOnceZombie(ref _zbAFaultReported, "A", ex); }
+
+			try { CollectZombieCdLinesB(cm, character, charName, lines); }
+			catch (Exception ex) { WarnOnceZombie(ref _zbBFaultReported, "B", ex); }
+		}
+		catch { }
+	}
+
+	/// <summary>
+	/// 本通道放行的**宿主类型**（v1.26.1 起不只是僵尸）：
+	///   ① `TowerDefenseZombie` 及其子类 —— 31 个僵尸里的绝大多数；
+	///   ② **骨堆 `TowerDefenseSkeleton`**（骷髅伽刚特尔死亡动画播完后留下的 30 秒复活计时实体）。
+	///      它的继承链是 `TowerDefenseSkeleton : TowerDefenseGravestone : TowerDefenseCharacter`，
+	///      **不是僵尸**，但数据齐全可显示：`TowerDefenseSkeleton.cs:12/:14`
+	///      `public double timer; public double time = 30.0;`，`:34-38` 累加、`:49-56` 满 30 秒生成
+	///      `ZombieSkeletuar` 并 `over = true`；配置 `GraveStone\Skeleton\Config\TowerDefenseSkeleton.tres`
+	///      `hitpoints=3000 / packetCooldown=30`。
+	///
+	/// ⚠️ **普通墓碑不放行**：`TowerDefenseGravestone` 是所有墓碑的共同基类，若按基类放行，
+	///   普通墓碑（GraveStoneTarget 等）也会进来。这里只认**类名/配置名里明确带 Skeleton 的**，
+	///   即 `charName == "Skeleton"` 或类名 `TowerDefenseSkeleton`（含其未来子类名带 Skeleton 的）。
+	/// </summary>
+	private static bool IsZombieCdHost(TowerDefenseCharacter character, string charName)
+	{
+		if (IsZombieChar(character)) { return true; }
+		try
+		{
+			if (character == null) { return false; }
+			string tn = character.GetType().Name;
+			if (tn == "TowerDefenseSkeleton") { return true; }
+			if (string.Equals(charName, "Skeleton", StringComparison.Ordinal)) { return true; }
+			// 兜底：骨堆的盔甲/变体若派生新类，类名里一定带 Skeleton；
+			// 同时**必须**确属墓碑体系，避免其它同名巧合类型被误放行。
+			if (!string.IsNullOrEmpty(tn) && tn.IndexOf("Skeleton", StringComparison.Ordinal) >= 0
+				&& (character is TowerDefenseGravestone))
+			{
+				return true;
+			}
+		}
+		catch { }
+		return false;
+	}
+
+	private bool _zbAFaultReported;
+	private bool _zbBFaultReported;
+
+	/// <summary>僵尸分支异常只报一次（每个批次一个标志），不刷屏。</summary>
+	private void WarnOnceZombie(ref bool flag, string batch, Exception ex)
+	{
+		if (flag) { return; }
+		flag = true;
+		Warn("僵尸CD[" + batch + "批] 读取异常（本条只报一次）：" + ex.Message);
+	}
+
+	// ---------------------------------------------------------------- 给 a/b 的公共助手
+	//
+	// ★ 这三个文件是**同一个类** ⇒ 本文件里的 private 成员在 ZombieCdA/B.cs 里**直接用**：
+	//     AddLine(lines, 文本, 颜色)                    非计时行（Total=0，不参与「只显示≥5秒」过滤）
+	//     AddTimer(lines, 文本, 颜色, 总时长)            计时行（总时长 < 4.9 秒会被过滤）
+	//     BusyColor / ReadyColor / DisabledColor         青蓝(进行中) / 绿(就绪) / 灰(失效)
+	//     CatOn(9)                                       「显示僵尸冷却」开关（外层已判，防御性用）
+	//     MaxTotalLines(=6) / MaxTimerLines(=3)          行数上限
+	//     charName                                       该僵尸 config.name（如 "ZombieNormalDoomShroom"）
+	//     character / cm                                角色实例与组件管理器
+	//   ⚠️ **不要**在 ZombieCdA/B.cs 里重新定义 AddLine / AddTimer / FindFieldAlong 等同名成员，
+	//      否则就是 CS0111 重复定义、整包编译失败。
+
+	/// <summary>
+	/// 僵尸字段的**沿类型链查找 + 缓存**（`TowerDefenseZombie` → `TowerDefenseCharacter` → … 都会找）。
+	/// 键 = 类型全名 + "|" + 字段名 ⇒ 同一僵尸类型的反射只做一次，扫全树也不怕。
+	/// 找不到返回 null（调用方判空即可，绝不抛）。
+	/// </summary>
+	private static FieldInfo ZombieField(Type t, string name)
+	{
+		if (t == null || string.IsNullOrEmpty(name)) { return null; }
+		string key = t.FullName + "|" + name;
+		FieldInfo hit;
+		if (_zbFieldCache.TryGetValue(key, out hit)) { return hit; }
+		hit = FindFieldAlong(t, name);
+		_zbFieldCache[key] = hit;
+		return hit;
+	}
+
+	private static readonly System.Collections.Generic.Dictionary<string, FieldInfo> _zbFieldCache =
+		new System.Collections.Generic.Dictionary<string, FieldInfo>();
+
+	/// <summary>读字段为 double（取不到 / 类型不符 ⇒ 返回 fallback，绝不抛）。</summary>
+	private static double ZombieNum(object obj, FieldInfo f, double fallback)
+	{
+		try
+		{
+			if (obj != null && f != null)
+			{
+				object v = f.GetValue(obj);
+				if (v != null) { return Convert.ToDouble(v); }
+			}
+		}
+		catch { }
+		return fallback;
+	}
+
+	/// <summary>读字段为 bool（取不到 / 类型不符 ⇒ false，绝不抛）。</summary>
+	private static bool ZombieFlag(object obj, FieldInfo f)
+	{
+		try
+		{
+			if (obj != null && f != null)
+			{
+				object v = f.GetValue(obj);
+				if (v is bool b) { return b; }
+			}
+		}
+		catch { }
+		return false;
+	}
+
+	/// <summary>
+	/// 该角色是不是**僵尸**（`TowerDefenseZombie` 及其子类）。
+	/// 用强类型判定而不是类名/名单 —— 31 个僵尸只是"要显示的清单"，不是"全部僵尸"；
+	/// 将来新增僵尸只要类继承链正确，框架自动放行（只不过没人写分支就不显示）。
+	/// </summary>
+	private static bool IsZombieChar(TowerDefenseCharacter character)
+	{
+		try
+		{
+			return character != null && (character is TowerDefenseZombie);
+		}
+		catch { return false; }
+	}
+
+	/// <summary>
+	/// `charName` 是否命中给定的一组角色名（`config.name`，如 "ZombieNormalDoomShroom"）。
+	/// 用于"同一个类被多个僵尸复用"或需要兼容旧 key 的场合；精确匹配、区分大小写。
+	/// </summary>
+	private static bool ZombieNameIs(string charName, params string[] names)
+	{
+		if (string.IsNullOrEmpty(charName) || names == null) { return false; }
+		for (int i = 0; i < names.Length; i++)
+		{
+			if (string.Equals(charName, names[i], StringComparison.Ordinal)) { return true; }
+		}
+		return false;
+	}
+
+	/// <summary>
+	/// 可显示性的**统一判据**（写进契约文档，a/b 照此结论写"不可显示"的理由）：
+	///   能同时读到「剩余时间」和「总时长」⇒ 可显示；否则只能显示状态文字或判为不可显示。
+	/// 这里给个现成的：`remaining &gt; 0 且 total &gt; 0`。
+	/// </summary>
+	private static bool ZombieCdDisplayable(double remaining, double total)
+	{
+		return remaining > 0.0 && total > 0.0;
 	}
 
 	// ---------------------------------------------------------------- 设置页开关
@@ -3466,6 +3714,13 @@ public void Initialize(XWModRuntimeContext context)
 				&& existLongCb.ButtonPressed != _onlyLongTimers)
 			{
 				existLongCb.SetPressedNoSignal(_onlyLongTimers);
+			}
+			// ★ v1.26.0：「显示僵尸冷却」独立开关（同样单独校准）
+			CheckBox existZbCb = cols.FindChild(ZombieCdCheckBoxName, true, false) as CheckBox;
+			if (existZbCb != null && GodotObject.IsInstanceValid(existZbCb)
+				&& existZbCb.ButtonPressed != _showZombieCd)
+			{
+				existZbCb.SetPressedNoSignal(_showZombieCd);
 			}
 			return;
 		}
@@ -3569,6 +3824,9 @@ public void Initialize(XWModRuntimeContext context)
 				target.AddChild(sub);
 			}
 		}
+
+		// ★ v1.26.0：「显示僵尸冷却」—— 独立开关（不在 9 类里），放在第 3 列（署名行之前）
+		AppendZombieCdControls(col3);
 
 		// ★ v1.15.4：署名/防冒用行放在**第三列的最后一行**（用户要求；原在第 1 列游戏列表下方）
 		Label sign = new Label();
@@ -3816,7 +4074,9 @@ public void Initialize(XWModRuntimeContext context)
 				CheckBox fcb = MakeFeatureCheckBox("ModFeatureCb" + idx, ftext[idx], GetFeatureValue(idx), idx);
 				((k < 5) ? c2 : (c3 != null && GodotObject.IsInstanceValid(c3) ? c3 : c2)).AddChild(fcb);
 			}
-			Info("CD 面板内容已补齐（总开关 + 只显示≥5秒 + 9 类开关）。");
+			// ★ v1.26.0：「显示僵尸冷却」—— 守候补全路径也要补上，否则会出现"有 9 类没有僵尸开关"
+			AppendZombieCdControls((c3 != null && GodotObject.IsInstanceValid(c3)) ? c3 : c2);
+			Info("CD 面板内容已补齐（总开关 + 只显示≥5秒 + 9 类开关 + 显示僵尸冷却）。");
 		}
 		catch (Exception ex) { Warn("填 CD 面板内容异常（已吞）：" + ex.Message); }
 	}
@@ -4113,6 +4373,82 @@ public void Initialize(XWModRuntimeContext context)
 		return fcb;
 	}
 
+	// ---------------------------------------------------------------- v1.26.0 僵尸冷却开关（UI）
+
+	/// <summary>造「显示僵尸冷却」勾选框。样式与 9 类功能开关一致（v1.26.0）。</summary>
+	private CheckBox MakeZombieCdCheckBox()
+	{
+		CheckBox cb = new CheckBox();
+		cb.Name = ZombieCdCheckBoxName;
+		cb.Text = "显示僵尸冷却";
+		cb.Alignment = HorizontalAlignment.Center;
+		cb.MouseDefaultCursorShape = Control.CursorShape.PointingHand;
+		cb.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+		cb.AddThemeConstantOverride("outline_size", 5);
+		cb.AddThemeFontSizeOverride("font_size", 14);
+		cb.ButtonPressed = _showZombieCd;   // ★ 先设状态再连信号 ⇒ 不会触发一次回调
+		cb.Connect("toggled", Callable.From(new Action<bool>(OnZombieCdChanged)));
+		return cb;
+	}
+
+	/// <summary>「显示僵尸冷却」下面的说明小字（举几个例子，方便玩家知道这个开关管什么）。</summary>
+	private Label MakeZombieCdSubLabel()
+	{
+		Label sub = new Label();
+		sub.Name = ZombieCdCheckBoxName + "Sub";
+		sub.Text = "— 毁灭菇爆炸·火爆辣椒自燃·天使复活·磁力开启 等僵尸专属计时 —";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		sub.MouseFilter = Control.MouseFilterEnum.Ignore;
+		sub.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+		sub.AddThemeConstantOverride("outline_size", 4);
+		sub.AddThemeFontSizeOverride("font_size", 11);
+		sub.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f, 1f));
+		sub.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		sub.CustomMinimumSize = new Vector2(230f, 0f);
+		return sub;
+	}
+
+	/// <summary>
+	/// 把「显示僵尸冷却」勾选框 + 说明小字追加到指定列。
+	/// **两个建面板的地方都要调**（TryEnsureOptionCheckBox 内的主建路径 / EnsureCdPanelContent 守候补全路径），
+	/// 否则用户实测会出现"面板里有 9 类开关但没有僵尸开关"的半成品状态。
+	/// </summary>
+	private void AppendZombieCdControls(VBoxContainer target)
+	{
+		try
+		{
+			if (target == null || !GodotObject.IsInstanceValid(target)) { return; }
+			if (target.FindChild(ZombieCdCheckBoxName, false, false) != null) { return; }   // 幂等
+			target.AddChild(MakeZombieCdCheckBox());
+			try { target.AddChild(MakeZombieCdSubLabel()); } catch { }
+		}
+		catch (Exception ex)
+		{
+			Warn("追加「显示僵尸冷却」控件异常（已吞）：" + ex.Message);
+		}
+	}
+
+	/// <summary>
+	/// 「显示僵尸冷却」切换：**内存 → 宿主配置 → user:// cfg** 三处同步（与 9 类开关同一套路，
+	/// 见 <see cref="PersistSwitch"/>），并打一条开关日志（受 enableLog 控制）。
+	/// ⚠️ 宿主键名必须与 mod.json 的 settings.key 逐字一致（showZombieCd），否则 TrySave 整批拒绝。
+	/// </summary>
+	private void OnZombieCdChanged(bool on)
+	{
+		try
+		{
+			_showZombieCd = on;
+			PersistSwitch(HostKeyZombieCd, on);
+			Info("开关[显示僵尸冷却] → " + (on ? "开" : "关")
+				+ "；已落盘 " + HostKeyZombieCd + "=" + (on ? "true" : "false")
+				+ "（cfg 键 " + ZombieCdCfgKey + " 同步写入）");
+		}
+		catch (Exception ex)
+		{
+			Warn("「显示僵尸冷却」切换异常（已吞）：" + ex.Message);
+		}
+	}
+
 	/// <summary>「只显示 ≥5 秒」开关切换（v1.19.0）。</summary>
 	private void OnOnlyLongChanged(bool on)
 	{
@@ -4236,6 +4572,10 @@ public void Initialize(XWModRuntimeContext context)
 			case 5: return _showGrowth;      // 成长与充能
 			case 6: return _showProduce;     // 产出倒计时
 			case 7: return _showCombat;      // 战斗辅助
+			// ★ v1.26.0：9 = 「显示僵尸冷却」——**僵尸专属附加行**通道（ZombieCdA/B.cs），
+			//   不参与 0..8 的 FeatureKeys/FeatureHostKeys 循环，只在这里开放一个语义化入口，
+			//   让僵尸分支可以写成 `if (!CatOn(9)) return;`（防御性写法，实际外层已判过）。
+			case 9: return _showZombieCd;
 			default: return _showLevel;      // 等级与加速
 		}
 	}
@@ -4314,6 +4654,9 @@ public void Initialize(XWModRuntimeContext context)
 					object fv = cf.GetValue("mod", FeatureKeys[i], true);
 					SetFeatureValue(i, (fv is bool fb) ? fb : true);
 				}
+				// ★ v1.26.0「显示僵尸冷却」（缺键默认开）
+				object zv = cf.GetValue("mod", ZombieCdCfgKey, true);
+				_showZombieCd = (zv is bool zb) ? zb : true;
 			}
 		}
 		catch (Exception ex)
@@ -4344,6 +4687,8 @@ public void Initialize(XWModRuntimeContext context)
 			{
 				cf.SetValue("mod", FeatureKeys[i], GetFeatureValue(i));
 			}
+			// ★ v1.26.0「显示僵尸冷却」
+			cf.SetValue("mod", ZombieCdCfgKey, _showZombieCd);
 			cf.Save(ConfigPath);
 		}
 		catch (Exception ex)
@@ -5278,6 +5623,20 @@ public void Initialize(XWModRuntimeContext context)
 			case "Regen": return "回复";
 			case "Health": return "血量";
 			case "Heal": return "治疗";
+			// ★ v1.26.0（zombie-dev-b 申请 + Lead 2026-11-07 拍板）：僵尸侧的命名计时器键。
+			//   B 批有 5 个僵尸（塞壬/守护术士/占卜术士/唤魔使/女巫）的 CD **全部**是
+			//   `character.timer` 的命名计时器（InstanceId = "character.timer"），已被通用通道 ②
+			//   显示 —— 以前显示成英文键名（`Cast 11.4s`）。补上映射后自动变中文，
+			//   且**不会**产生第二行重复显示（这是它们的正解，不是"没做"）。
+			//   证据：Siren 的 {Cast:12,Heal:1,Sing:5} / GuardMage·DivineMage·Evoker 的 {Cast} /
+			//         Witch 的 {Throw}，见 研究-僵尸CD\B批-研究.md §16 与各自 *TimerComponentDefinition.tres。
+			case "Cast": return "施法";
+			case "Sing": return "歌唱";
+			case "Throw": return "投掷";
+			// ★ v1.26.0（zombie-dev-a 申请）：三叶草气球/三叶草多彩气球僵尸的 8 秒吹飞计时
+			//   （TowerDefenseZombieBalloonBlover.cs:120 `_timer.Run("Clover", 8.0)`，同款 :137）
+			//   走通用通道 ② 显示，原来露英文键名 `Clover 8.0s` ⇒ 补映射变中文。
+			case "Clover": return "吹飞";
 			default: return key;
 		}
 	}
