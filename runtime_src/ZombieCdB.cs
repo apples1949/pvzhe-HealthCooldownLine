@@ -54,6 +54,8 @@ public sealed partial class HealthCooldownLineEntry
 	private const string ZbBLblMagnet = "磁力";   // 电磁拖车僵尸
 	private const string ZbBLblRevive = "复活";   // 骷髅伽刚特尔（骨堆聚拢复活）
 	private const string ZbBLblInvis = "隐身";    // 黑客小鬼僵尸
+	private const string ZbBLblClose = "闭合";    // 传送门僵尸（传送门关闭）★ v1.27.0 新词
+	private const string ZbBLblRage = "狂暴";     // 魔化僵尸怪人（进入狂暴）★ v1.27.0 新词
 
 	// 各僵尸的**构建期常量**（数值全部与源码常量逐一对应，行号写在 B批-研究.md）
 	private const double ZbBImpCloudInterval = 8.0;      // ImpCloud.cs:8  SHOOT_INTERVAL
@@ -428,6 +430,73 @@ public sealed partial class HealthCooldownLineEntry
 		catch { }
 
 		// ════════════════════════════════════════════════════════════
+		// ⑪ 传送门僵尸（🆕 v1.27.0 用户点名扩展） ZombiePortal → TowerDefenseZombiePortal
+		//    图鉴：出场时传送门为开启状态（可吞掉一切正面平射实体子弹）；**登场 20 秒后关闭**；
+		//          关闭/被消除/本体死亡时把吞下的子弹从随机一扇传送门吐出。
+		//    证据：Challenge\Portal\Scene\TowerDefenseZombiePortal.cs
+		//          :31 `public double timer;`   :33 `public double time = 20.0;`   :35 `public bool over;`
+		//          :109-121 `if (!over && CanRunAbility()) { if (timer < time) timer += delta * timeScale;
+		//                                            else { over = true; ToPortal(); } }`
+		//    语义：可显示（剩余 = time − timer；`over`＝门已关 ⇒ 不再显示）
+		// ════════════════════════════════════════════════════════════
+		try
+		{
+			if (ZbBIsZombie(character, charName, "ZombiePortal", "TowerDefenseZombiePortal"))
+			{
+				Type t = character.GetType();
+				FieldInfo fTimer = ZombieField(t, "timer");
+				FieldInfo fTime = ZombieField(t, "time");
+				FieldInfo fOver = ZombieField(t, "over");
+				if (fTimer != null && fTime != null && !ZombieFlag(character, fOver))
+				{
+					double total = ZombieNum(character, fTime, 20.0);
+					if (total <= 0.0) { total = 20.0; }
+					double rem = total - ZombieNum(character, fTimer, 0.0);
+					if (ZombieCdDisplayable(rem, total) && lines.Count < MaxTotalLines)
+					{
+						AddTimer(lines, ZbBLblClose + " " + rem.ToString("0.0") + "s", BusyColor, total);
+					}
+				}
+			}
+		}
+		catch { }
+
+		// ════════════════════════════════════════════════════════════
+		// ⑫ 魔化僵尸怪人（🆕 v1.27.0 用户点名扩展） ZombieMagicYeti → TowerDefenseZombieMagicYeti
+		//    图鉴：入场 **30 秒** / 血量首次低于 1000 时进入狂暴（上限→4000 并回满、免疫减速、
+		//          体型变大、改砸击、速度大幅提升）。
+		//    证据：Chapter10\MagicYeti\Scene\TowerDefenseZombieMagicYeti.cs
+		//          :25 `RageTriggerTime = 30.0`   :27 `RageTriggerHitpoints = 1000.0`
+		//          :63 `private double _aliveTime;`
+		//          :177 `_aliveTime += Math.Max(0.0, delta) * timeScale;`
+		//          :186 `if (CanRunAbility() && !_rageEntered && !_rageRequested
+		//                 && (!(_aliveTime < 30.0) || !(instance.hitpoints > 1000.0))) → SendStateEvent("ToRage")`
+		//          :49/:51 `_rageEntered` / `_rageRequested`
+		//    语义：可显示（剩余 = 30 − _aliveTime）
+		//    ⚠️ 还有**第二条触发路径**（血量 ≤1000）⇒ 这一行可能**提前消失**，属正常（不是缺陷）
+		// ════════════════════════════════════════════════════════════
+		try
+		{
+			if (ZbBIsZombie(character, charName, "ZombieMagicYeti", "TowerDefenseZombieMagicYeti"))
+			{
+				Type t = character.GetType();
+				FieldInfo fAlive = ZombieField(t, "_aliveTime");
+				FieldInfo fEntered = ZombieField(t, "_rageEntered");
+				FieldInfo fRequested = ZombieField(t, "_rageRequested");
+				if (fAlive != null && !ZombieFlag(character, fEntered) && !ZombieFlag(character, fRequested))
+				{
+					double total = 30.0;   // RageTriggerTime
+					double rem = total - ZombieNum(character, fAlive, 0.0);
+					if (ZombieCdDisplayable(rem, total) && lines.Count < MaxTotalLines)
+					{
+						AddTimer(lines, ZbBLblRage + " " + rem.ToString("0.0") + "s", BusyColor, total);
+					}
+				}
+			}
+		}
+		catch { }
+
+		// ════════════════════════════════════════════════════════════
 		// ── 已由**通用通道 ②**显示（本批 5 个，这里不重复写行）──────────────
 		//
 		// 判据：这 5 个僵尸的计时器全部是 `CharacterTimerComponent` 的命名计时器，
@@ -464,6 +533,209 @@ public sealed partial class HealthCooldownLineEntry
 		//     ...\TowerDefenseZombieWitchTimerComponentDefinition.tres: timerDictionary = { "Throw": 10.0 }
 		//     TowerDefenseZombieWitch.cs:107/:178 `Run("Throw", 10.0)`（投毒药瓶 CD）
 		// ════════════════════════════════════════════════════════════
+	}
+
+	// ════════════════════════════════════════════════════════════════════
+	// v1.2（1.27.0）**图鉴静态 CD** —— B 批 18 个（原 15 个 + 本轮用户点名的 3 个扩展项）
+	//
+	// ── 为什么要有这条通道（Lead 已查明）────────────────────────────────
+	//   图鉴**不创建战斗实体**：`unpack\Prefab\GUI\DialogBox\Almanac\Almanac.cs#BindZombiePreview()`
+	//   只做 `AlmanacZombieWidow.Init()` → `CreateSprite()`(AdobeAnimateSprite) + `FreezePreviewTree()`，
+	//   没有 TowerDefenseCharacter / 没有 Component / timer 不跑
+	//   ⇒ 战斗内读运行时字段的那条通道（`CollectZombieCdLinesB`）在图鉴里**永远读不到**，
+	//     所以图鉴改显示**配置级的静态 CD**（"这个僵尸的某个技能每隔多少秒"）。
+	//
+	// ── 契约（v1.2，cdmod-owner）────────────────────────────────────────
+	//   · 入参只有 `charName`（= `config.characterConfig.name`，如 "ZombieSiren"）与 `saveKey`（卡池键），
+	//     **没有 character、没有 cm**（图鉴里不存在实体）。
+	//   · 一律 `AddLine`（`Total = 0`）⇒ 静态行**不参与**「只显示 ≥5 秒」过滤；**不要**用 AddTimer。
+	//   · 颜色一律 `ReadyColor`（绿＝"配置就绪"）。
+	//   · **最多 3 行**，按重要性从高到低 AddLine（owner 的叠加层会用 ` · ` 串成一行并自动截断）。
+	//   · 分支里**不要判开关**（`showAlmanacCd` + 总开关已在外层门控）。
+	//   · **写"有效值"不写"定义值"**：代码 `Run(key, 实际值)` 覆盖过 .tres 默认值的，按运行时实际值写
+	//     （唤魔使定义 10.0 / 运行期 5.0 ⇒ 写 5.0；飞行器定义 25.0 / 运行期 15.0 ⇒ 写 15.0）。
+	//   · 只写"有间隔的机制"，**不写**瞬发能力与百分比（闪身步、滑倒概率、狂暴锁链等）。
+	// ════════════════════════════════════════════════════════════════════
+	/// <summary>
+	/// 图鉴静态 CD 的 **B 批实现点**（18 个僵尸）。契约 v1.2；证据行号见 `B批-研究.md §20`。
+	/// </summary>
+	partial void CollectAlmanacStaticCdB(string charName, string saveKey,
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
+	{
+		if (lines == null) { return; }
+
+		// ① 云小鬼僵尸 ZombieImpCloud —— 每 8 秒扔一只地刺小鬼
+		//    证据：Chapter8\ImpCloud\Scene\TowerDefenseZombieImpCloud.cs:8 `SHOOT_INTERVAL = 8f`
+		if (ZbBStaticIs(charName, saveKey, "ZombieImpCloud"))
+		{
+			ZbBStaticAdd(lines, "投掷 8.0s");
+			return;
+		}
+
+		// ② 黑客小鬼僵尸 ZombieImphacker —— 每 10 秒篡改一次卡槽，随后隐身 4 秒
+		//    证据：Challenge\Imphacker\Scene\TowerDefenseZombieImphacker.cs:94 `_hackTimer.Start(10.0)`
+		//                                                       :174 `_hackEffectRemaining = 4.0`
+		if (ZbBStaticIs(charName, saveKey, "ZombieImphacker"))
+		{
+			ZbBStaticAdd(lines, "篡改 10.0s");
+			ZbBStaticAdd(lines, "隐身 4.0s");
+			return;
+		}
+
+		// ③ 骷髅伽刚特尔 —— 陆地首次死亡散落骨堆，30 秒后聚拢复活
+		//    ★ 图鉴页的 charName 是 `ZombieSkeletuar`，而 30 秒计时挂在"骨堆" `Skeleton` 上 ⇒ 两个键都收。
+		//    证据：GraveStone\Skeleton\Config\TowerDefenseSkeleton.tres:16 `packetCooldown = 30.0`
+		//          GraveStone\Skeleton\Scene\TowerDefenseSkeleton.cs:14 `public double time = 30.0;`
+		if (ZbBStaticIs(charName, saveKey, "ZombieSkeletuar", "Skeleton"))
+		{
+			ZbBStaticAdd(lines, "复活 30.0s");
+			return;
+		}
+
+		// ④ 基因炸弹僵尸 ZombieJackGene —— 出场后一段时间自爆（**每次随机 9~20 秒**）
+		//    证据：Chapter9\JackGene\Scene\TowerDefenseZombieJackGene.cs:85 `time = GD.RandRange(9.0, 20.0);`
+		//    ⇒ 静态值只能是区间（不写死单值，避免误导"固定 15 秒"）
+		if (ZbBStaticIs(charName, saveKey, "ZombieJackGene"))
+		{
+			ZbBStaticAdd(lines, "爆破 9.0~20.0s");
+			return;
+		}
+
+		// ⑤ 电磁拖车僵尸 ZombieMagnetron —— 锚定后每 10 秒发射磁力射线拖拽 1 格
+		//    证据：Chapter9\Magnetron\Scene\TowerDefenseZombieMagnetron.cs:44 `AttackInterval = 10.0`
+		//          :350 `if (attackTimer >= 10.0) BeginShooting(...)`；`:557-559` 发射即归零
+		if (ZbBStaticIs(charName, saveKey, "ZombieMagnetron"))
+		{
+			ZbBStaticAdd(lines, "磁力 10.0s");
+			return;
+		}
+
+		// ⑥ 安眠术士僵尸 ZombieSleepMage —— 入场 5 秒后停下吟唱，吟唱 5 秒发射魔弹，随后睡 10 秒
+		//    证据：Chapter10\SleepMage\Scene\TowerDefenseZombieSleepMage.cs:9 `EntryCastDelay = 5.0`
+		//          :259 `if (chantTimer >= 5.0)`；:11 `SleepDuration = 10.0`；:384 `sleepTimer < 10.0`
+		//    说明：前摇 5s 与吟唱 5s 同长 ⇒ 只写一条 `吟唱 5.0s`（两段共用），再写 `睡眠 10.0s`。
+		if (ZbBStaticIs(charName, saveKey, "ZombieSleepMage"))
+		{
+			ZbBStaticAdd(lines, "吟唱 5.0s");
+			ZbBStaticAdd(lines, "睡眠 10.0s");
+			return;
+		}
+
+		// ⑦ 时间术士僵尸 ZombieTimeMage —— 每 10 秒发射一枚定时魔弹
+		//    证据：Chapter10\TimeMage\Scene\TowerDefenseZombieTimeMage.cs:163 `if (spellTimer >= 10.0)`
+		//          :209 发射时 `spellTimer = 0.0`（循环 10s）
+		if (ZbBStaticIs(charName, saveKey, "ZombieTimeMage"))
+		{
+			ZbBStaticAdd(lines, "施法 10.0s");
+			return;
+		}
+
+		// ⑧ 守卫伽刚特尔 ZombieGargantuarGD —— 血量跌破 50% 进入蓄力，最多 5 秒
+		//    证据：Chapter10\GargantuarGD\Scene\TowerDefenseZombieGargantuarGD.cs:21 `ChargeDuration = 5.0`
+		//          :165 `_chargeElapsed + 1E-09 >= 5.0`
+		if (ZbBStaticIs(charName, saveKey, "ZombieGargantuarGD"))
+		{
+			ZbBStaticAdd(lines, "蓄力 5.0s");
+			return;
+		}
+
+		// ⑨ 塞壬僵尸 ZombieSiren —— 每 12 秒歌唱一次、歌唱持续 5 秒、期间友方每秒回血（Heal 1s 心跳）
+		//    证据：Chapter10\Siren\Scene\TowerDefenseZombieSirenTimerComponentDefinition.tres:8-10
+		//          `timerDictionary = { "Cast": 12.0, "Heal": 1.0, "Sing": 5.0 }`
+		//          类内常量交叉印证：TowerDefenseZombieSiren.cs:10 `SingInterval = 12.0` / :12 `SingDuration = 5.0`
+		//    行序按 owner 要求：歌唱 CD → 歌唱时长 → 治疗心跳
+		if (ZbBStaticIs(charName, saveKey, "ZombieSiren"))
+		{
+			ZbBStaticAdd(lines, "施法 12.0s");
+			ZbBStaticAdd(lines, "歌唱 5.0s");
+			ZbBStaticAdd(lines, "治疗 1.0s");
+			return;
+		}
+
+		// ⑩ 守护术士僵尸 ZombieGuardMage —— 每 10 秒施法给 3×3 内友军 +300 护盾
+		//    证据：...\TowerDefenseZombieGuardMageTimerComponentDefinition.tres:8 `"Cast": 10.0`
+		//          TowerDefenseZombieGuardMage.cs:92/:145 `Run("Cast", 10.0)`
+		if (ZbBStaticIs(charName, saveKey, "ZombieGuardMage"))
+		{
+			ZbBStaticAdd(lines, "施法 10.0s");
+			return;
+		}
+
+		// ⑪ 占卜术士僵尸 ZombieDivineMage —— 每 12 秒占卜一次（随机一张卡进入预言 10 秒）
+		//    证据：...\TowerDefenseZombieDivineMageTimerComponentDefinition.tres:8 `"Cast": 12.0`
+		//          TowerDefenseZombieDivineMage.cs:125/:178 `Run("Cast", 12.0)`
+		if (ZbBStaticIs(charName, saveKey, "ZombieDivineMage"))
+		{
+			ZbBStaticAdd(lines, "施法 12.0s");
+			return;
+		}
+
+		// ⑫ 唤魔使僵尸 ZombieEvoker —— 每 5 秒召唤一个魔魂（集齐 3 个后改为召唤影子）
+		//    ★ **写有效值 5.0，不写定义值 10.0**：
+		//       定义 ...\TowerDefenseZombieEvokerTimerComponentDefinition.tres:8 `"Cast": 10.0`
+		//       但类里每次都 `Run("Cast", 5.0)` 覆盖 ⇒ TowerDefenseZombieEvoker.cs:10 `CastInterval = 5.0`
+		//                                                   :215/:270 `Run("Cast", 5.0)`
+		if (ZbBStaticIs(charName, saveKey, "ZombieEvoker"))
+		{
+			ZbBStaticAdd(lines, "施法 5.0s");
+			return;
+		}
+
+		// ⑬ 女巫僵尸 ZombieWitch —— 每 10 秒投一枚毒药瓶
+		//    证据：...\TowerDefenseZombieWitchTimerComponentDefinition.tres:8 `"Throw": 10.0`
+		//          TowerDefenseZombieWitch.cs:107/:178 `Run("Throw", 10.0)`
+		if (ZbBStaticIs(charName, saveKey, "ZombieWitch"))
+		{
+			ZbBStaticAdd(lines, "投掷 10.0s");
+			return;
+		}
+
+		// ⑭⑮ 快闪迪斯科 / 快闪舞者 —— 滑倒后 10 秒起身（同一组件的静态默认值）
+		//    证据：Script\Component\TowerDefense\Character\FlashStepComponent\FlashStepComponentDefinition.cs:11
+		//          `public double fellDuration { get; set; } = 10.0;`
+		//          （两个僵尸的 ComponentSet 里该定义是内联实例、未覆盖该字段）
+		//    说明：入场召唤 4 只舞者是瞬发、闪身步是事件触发、滑倒概率是百分比 ⇒ 都不是时间 CD，不写。
+		if (ZbBStaticIs(charName, saveKey, "ZombieDiscoFlash", "ZombieBackupFlash"))
+		{
+			ZbBStaticAdd(lines, "起身 10.0s");
+			return;
+		}
+
+		// ── 以下 3 个是 **本轮（1.27.0）用户点名扩展**，不在原 31 个清单里 ──────────
+
+		// ⑯ 飞行器僵尸 ZombieAircraft —— 每 15 秒启动螺旋桨向前推进 1 格
+		//    ★ **写有效值 15.0，不写定义值 25.0**：
+		//       定义 ...\TowerDefenseZombieAircraftTimerComponentDefinition.tres:8 `"Spawn": 25.0`
+		//       但类里每轮都 `Run("Spawn", 15.0)` 覆盖 ⇒ TowerDefenseZombieAircraft.cs:132/:144
+		//    ★ 契约要求：**不要**再写一条"生成 25.0s"（会自相矛盾，且战斗内 `Spawn` 已由通用通道显示为「生成」）
+		if (ZbBStaticIs(charName, saveKey, "ZombieAircraft"))
+		{
+			ZbBStaticAdd(lines, "推进 15.0s");
+			return;
+		}
+
+		// ⑰ 传送门僵尸 ZombiePortal —— 登场 20 秒后传送门关闭（关闭时吐出吞下的子弹）
+		//    证据：Challenge\Portal\Scene\TowerDefenseZombiePortal.cs:31 `public double timer;`
+		//          :33 `public double time = 20.0;`
+		//          :111-120 `if (timer < time) timer += delta * timeScale; else { over = true; ToPortal(); }`
+		if (ZbBStaticIs(charName, saveKey, "ZombiePortal"))
+		{
+			ZbBStaticAdd(lines, "闭合 20.0s");
+			return;
+		}
+
+		// ⑱ 魔化僵尸怪人 ZombieMagicYeti —— 入场 30 秒（或血量首次 <1000）进入狂暴
+		//    证据：Chapter10\MagicYeti\Scene\TowerDefenseZombieMagicYeti.cs:25 `RageTriggerTime = 30.0`
+		//          :27 `RageTriggerHitpoints = 1000.0`
+		//          :177 `_aliveTime += delta * timeScale`
+		//          :186 `if (!(_aliveTime < 30.0) || !(instance.hitpoints > 1000.0)) SendStateEvent("ToRage")`
+		//    说明：狂暴后"受魔法伤害上锁链、持续 10 秒"（`:39 ChainDuration = 10.0`）是**对它的减益**、
+		//          由玩家侧的魔法植物触发，不是它自己的 CD ⇒ 不写。
+		if (ZbBStaticIs(charName, saveKey, "ZombieMagicYeti"))
+		{
+			ZbBStaticAdd(lines, "狂暴 30.0s");
+			return;
+		}
 	}
 
 	// ─────────────────────────────────────────────────────────────────
@@ -552,5 +824,31 @@ public sealed partial class HealthCooldownLineEntry
 		}
 		catch { }
 		return fallback;
+	}
+
+	// ---------------------------------------------------------------- 图鉴静态 CD 专用助手
+
+	/// <summary>
+	/// 图鉴静态表的身份判据：`charName`（= `config.characterConfig.name`，首选）**或** `saveKey`（卡池键）命中即算。
+	/// 图鉴里没有实体，只能靠字符串；两个键都给是为了兼容"盔甲/变体 packet"（`saveKey` 与 `name` 不同的那几类）。
+	/// 精确匹配、区分大小写（沿用 `ZombieNameIs` 的语义）。
+	/// </summary>
+	private static bool ZbBStaticIs(string charName, string saveKey, params string[] keys)
+	{
+		if (keys == null || keys.Length == 0) { return false; }
+		if (ZombieNameIs(charName, keys)) { return true; }
+		return ZombieNameIs(saveKey, keys);
+	}
+
+	/// <summary>
+	/// 图鉴静态行写入：**一律 `ReadyColor` + `AddLine`（Total = 0，不参与「只显示 ≥5 秒」过滤）**，
+	/// 并**强制 3 行上限**（契约 v1.2：图鉴叠加层只接 3 行，超出按顺序截断；这里提前挡住更省事）。
+	/// </summary>
+	private static void ZbBStaticAdd(
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> ls, string text)
+	{
+		if (ls == null || string.IsNullOrEmpty(text)) { return; }
+		if (ls.Count >= 3) { return; }
+		AddLine(ls, text, ReadyColor);
 	}
 }

@@ -449,3 +449,144 @@ b.count(b'CollectZombieCdABatchLines')    # #Strings 堆：标识符（UTF-8）
 - 显示值依赖运行时字段，静态无法证明每个僵尸都会出现：
   例如 `waitGrab`（催眠师）要落地后才为 true、`explode`（自毁系）置 true 后故意隐藏，
   这些门控逻辑都是按 §2 里实读的源码分支写的，但**真机表现仍需按验收清单抽验**。
+
+---
+
+## 6. 图鉴静态 CD（v1.27.0 新增）
+
+### 6.1 为什么必须做"静态表"（两个面都没有跑起来的计时，已实读）
+
+| 面 | 节点 | 有没有真角色实例 | 计时会不会推进 |
+|---|---|---|---|
+| 图鉴**格子** | `AlmanacZombieWidow`（`unpack\Prefab\GUI\DialogBox\Almanac\AlmanacZombie\AlmanacZombieWidow.cs`） | **没有**（`Init(config)` 只 `CreateSprite()` + `FreezePreviewTree(sprite)`，`:16` 只有 `public TowerDefensePacketConfig config`） | 不适用 |
+| 图鉴**详情面板** | `InformationPanel`（`unpack\Prefab\GUI\InformationPanel\InformationPanel.cs:150-165`） | **有**（`InitPacket` 实例化真角色） | **不会**：`inGame=false` + `SetMainStateMachineDispatchEnabled(false)` ⇒ `BatchUpdate`/状态机不跑，`timer` 恒为初值 |
+
+⇒ 两处都只能显示**配置里的"满 CD 总时长"**，实现为 `partial void CollectAlmanacStaticCdA(string charName, string saveKey, lines)`（契约 v1.2；入参只有身份字符串，**没有 cm / character**），一律 `AddLine`（`Total=0`，不参与「只显示 ≥5 秒」），**不判开关**（外层 `_showAlmanacCd` 已判），**不带 `满CD：` 前缀**（`Entry.cs` 的 `AlmanacCdPrefix` 统一加）。
+
+### 6.2 三列总表（Lead 要求的口径：静态值 / 战斗内口径 / 图鉴能否复用）
+
+`[配置]` = 值确实写在资源里；`[代码]` = 值只在 DLL 的常量/字段默认值/字面量里（配置里查不到，改版会漂）。
+
+| # | 僵尸（后 3 个为本轮 Lead 点名核查） | 图鉴静态 CD | 静态值来源（证据） | 战斗内口径 | 图鉴复用 |
+|---|---|---|---|---|---|
+|1|毁灭菇僵尸|`爆破 25~30s`|[代码] `TowerDefenseZombieNormalDoomShroom.cs:63` `time = GD.RandRange(25.0, 30.0)`|`爆破 time−timer`（total=time）|✅ 同值（战斗内也是这 2 个字段）|
+|2|火爆辣椒僵尸|`自燃 25~30s`|[代码] `TowerDefenseZombieNormalJalapeno.cs:59` 同款|`自燃 time−timer`|✅|
+|3|火炬辣椒僵尸|`自燃 7~10s`|[代码] `TowerDefenseZombieNormalJalatorch.cs:8/:10` `ExplodeDelayMin=7.0`/`Max=10.0`，`:59 RandRange(7,10)`|`自燃 time−timer`|✅（**图鉴文案写 25~30，以代码为准**）|
+|4|三叶草气球僵尸|`吹飞 8.0s`|[配置] `TowerDefenseZombieBalloonBloverComponentSet.tres` 的 sub_resource `TimerDefinition` → `timerDictionary = {"Clover": 8.0}`|通用② `Clover`（`Blover.cs:120 Run("Clover", 8.0)`）|✅ 定义值=有效值|
+|5|三叶草多彩气球僵尸|`吹飞 8.0s`|[配置] `...BalloonColourBloverComponentSet.tres` 同款 `{"Clover": 8.0}`|通用② `Clover`（`:137`）|✅|
+|6|寒冰菇冰车僵尸|`自爆 25~30s`|[代码] `TowerDefenseZombieZamboniIceShroom.cs:87 RandRange(25,30)`|`自爆 time−timer`|✅（**图鉴写 15 秒，以代码为准**）|
+|7|玩偶匣僵尸|`自爆 9~20s`|[代码] `TowerDefenseZombieJackbox.cs:85 RandRange(9,20)`|`自爆 time−timer`|✅|
+|8|海妖僵尸|`召唤 15.0s`|[代码] `TowerDefenseZombieSeaDemon.cs:114 if (timer < 15.0)`|`召唤 15−timer` / `spawnNext` 时状态行|✅|
+|9|磁场僵尸|`磁力 6~12s`|[代码] `TowerDefenseZombieMagnetic.cs:26 openTime = RandRange(6.0,12.0)`|`磁力 openTime−openTimer` → `磁力 已开启`|✅|
+|10|鲨鱼僵尸|`咀嚼 15.0s`|[配置] `ChomperComponent\Definitions\ZombieSharkDefinition.tres` → `chewTime = 15.0`|通用②.5 `咀嚼 chewTime−chewTimer`|✅|
+|11|天使僵尸|`复活 15.0s` + `无敌 8.0s`（**2 行**）|[代码] `TowerDefenseZombieAngel.cs:35 spawnTimer = 15.0`、`:39 invincibleTimer = 8.0`（场景 tscn **无覆盖**）|`复活 spawnTimer` / `无敌 invincibleTimer`|✅|
+|12|催眠师僵尸|`偷取 10.0s`|[代码] `TowerDefenseZombieHypnotist.cs:181 if (waitTimer < 10.0)`|`偷取 10−waitTimer`（`waitGrab` 门控）|✅|
+|13|农夫僵尸|`召唤 10.0s`|[配置] 场景 `TowerDefenseZombieFarmer.tscn` → `spawnTime = 10.0`（字段 `:18` 同值）|`召唤 spawnTime−spawnTimer`|⚠️ 值一致，但**图鉴拿不到**（见 §6.4）|
+|14|海盗船长僵尸|`召唤 15.0s`|[配置] 场景 `TowerDefenseZombieCaptain.tscn` → `spawnTime = 15.0`（字段 `:11` 同值）|`召唤 spawnTime−spawnTimer`|⚠️ 同上|
+|15|重生法师僵尸|`治疗 10.0s`|[配置] 场景 `TowerDefenseZombieNecromancerG.tscn:19` → `shootingTime = 10.0`（字段 `:11` 同值）|`治疗 shootingTime−shootingTimer`|⚠️ 同上|
+|16|巨化法师僵尸|`变大 10.0s`|[配置] 场景 `TowerDefenseZombieNecromancerB.tscn:17` → `shootingTime = 10.0`（字段 `:15` 同值）|`变大 shootingTime−shootingTimer`|⚠️ 同上（**图鉴写 12 秒，以代码为准**）|
+|17|吸金磁僵尸（点名核查）|`吸金 3.0s`|[配置] `TowerDefenseZombieNormalGoldMagnetComponentSet.tres` 的 `MagnetCoinComponentDefinition` → `magnetTime = 3.0`（默认 5f，被组件集覆盖）|`吸金 magnetTime−timer`（**本轮新加战斗内分支**）|✅|
+|18|僵尸坚果伽刚特尔（点名核查）|`生成 10.0s`|[配置] `TowerDefenseZombieGargantuarWallnutZTimerComponentDefinition.tres` → `{"Spawn": 10.0}`；被同目录 `...ComponentSet.tres:5` 引用 ⇒ 真挂上；源码 `TowerDefenseZombieGargantuarWallnutZ.cs:45/:175/:179` `Run("Spawn", 10.0)` ⇒ 有效值=10.0|通用② `Spawn`（cat 3 生成计时，TimerLabel→`生成`）|✅ 战斗内已由通用通道显示，**不再加分支**|
+|19|僵尸豌豆小鬼（点名核查）|`生成 10.0s`|[配置] `TowerDefenseZombieImpPeashooterZTimerComponentDefinition.tres` → `{"Spawn": 10.0}`（`...ComponentSet.tres:4` 引用）；源码 `:96/:161 Run("Spawn", 10.0)`|通用② `Spawn`（cat 3）|✅ 同上|
+
+### 6.3 数据源统计（回答"图鉴能显示静态值的有哪些 / 战斗内能显示的有哪些 / 两者都拿不到的"）
+
+- **图鉴能显示静态值：19 / 19**（A 批 16 + 点名 3）。
+- **战斗内能显示：19 / 19**。其中 18 个走我或通用通道；**1 个是我本轮新加的**（吸金磁，`MagnetCoinComponent`）。
+  · 战斗内**已有**分支/通道：16（A 批）+ 坚果伽刚特尔 / 豌豆小鬼（通用② `Spawn`）＝ 18
+  · 战斗内**新增**：吸金磁（`character.magnet_coin`）
+- **两者都拿不到（配置里确实没有计时）：0 个**。
+  · 曾被怀疑的 **僵尸坚果伽刚特尔** 有 CD：`生成 10.0s`（派生定义 `{"Spawn": 10.0}`）——用户感觉"格子裁掉看不到"属**布局/裁切**问题，不是没有数据；
+  · **吸金磁僵尸** 有 CD：`吸金 3.0s`（`magnetTime`）——不是"只有出场一次"，而是**周期 CD**（`timer` 累加到满 → 吸一次 → `:262 timer = 0f` 归零）。
+
+### 6.4 唯一的复用风险（必须记下来）
+
+**农夫 / 海盗船长 / 重生法师 / 巨化法师** 这 4 个的权威值在**场景节点**上（`[Export] spawnTime` / `shootingTime`），
+而图鉴手里只有 `TowerDefensePacketConfig.characterConfig`（`TowerDefenseZombieConfig`）——
+该配置**没有任何计时字段**（实测 dump：`attack/weight/name/hitpointsNearDeath/hitpoints/damagePointData/armorData/customData/ashScene/homeWorld/cost/packetCooldown/plantGridType/maskFlags`）。
+⇒ 这 4 个的静态值**只能在 `ZombieCdA.cs` 里硬编码**（写 10.0 / 15.0 / 10.0 / 10.0），
+游戏改版若调了场景导出值，静态表**不会自动跟随**（其余 12 个要么是 `[代码]` 常量、要么是组件定义值，同样需要跟改版同步，性质相同）。
+这条已在 `ZombieCdA.cs` 的静态段注释里逐条标注 `[配置]` / `[代码]`。
+
+### 6.5 与「详情面板自带冷却行」的区别（避免验收时混淆）
+
+`InformationPanel` 自带那行「冷却时间」读的是 `packetConfig.characterConfig.packetCooldown`，
+而僵尸 config 基本不覆盖（例：`TowerDefenseZombieNormalGoldMagnet.tres:22 packetCooldown = 7.5` 是个例外），
+多数落到基类默认 **5.0**（`Resource\TowerDefense\Character\Config\TowerDefenseCharacterConfig.cs:83`）
+⇒ 图鉴里僵尸常显示"冷却时间 5.0"，那是**卡片冷却**，与本轮的**技能 CD 静态行**是两件事。
+
+### 6.6 一条口径说明：`吸金 3.0s` 与「只显示 ≥5 秒」（Lead 2026-11-08 拍板）
+
+吸金磁僵尸的战斗内 CD 是 **3.0 秒**（`magnetTime`，组件集覆盖值），小于过滤阈值 `4.9`
+（`Entry.cs` 的 `ShortTimerThresholdSeconds = 4.9`）。**实现上照实传真实的 `total = 3.0`，不传 0。**
+
+理由（既有语义，不为单个僵尸开后门）：
+- 「只显示 ≥5 秒」**默认是关的**（`_onlyLongTimers` 默认 `false`）⇒ 用户平常就能看到 `吸金 2.4s`；
+- 只有当用户**主动**打开该开关时，3.0s 这类短 CD 才会被整行隐藏 —— 这正是这个开关的设计意图
+  （"总时长 < 4.9 秒的计时不显示"），与加农炮/其他短 CD 一视同仁；
+- 若为它传 `total = 0`（= 永不参与过滤），会出现"这个僵尸的 CD 过滤不掉、别人的能过滤掉"的双标，反而更难解释。
+
+同理：**鲨鱼 `咀嚼 15.0s`、天使 `无敌 8.0s`、火炬辣椒 `自燃 7~10s`** 等之所以照实传总时长，
+也是为了让「只显示 ≥5 秒」对它们与对植物一致生效。
+
+---
+
+## 7. 本轮协作复核记录（两个"误显示"的性质定性，供报告引用）
+
+> 这两项**代码归 `cdmod-owner`**（`Entry.cs`），本节只记录我复核给出的**判据 + 证据 + 最终拦截点**，
+> 已由 owner 采纳并落地（编译 RC=0）。我的作用域文件 `ZombieCdA.cs` 与此无关。
+
+### 7.1 「巨型雪球 / 巨型冰球 / 烈焰毒物 不该显示血量」
+
+| 用户说的 | 真身（类 / 目录） | 图鉴定性 | 最终拦截点（`Entry.cs`） |
+|---|---|---|---|
+| 巨型雪球 | `TowerDefenseItemSnowBall`（`Item\SnowBall\`） | 物品（召唤物），韧性 `---` | `:205` 类名 `SnowBall`（v1.23.0 已有） |
+| 巨型冰球 | `TowerDefenseItemIceball`（`Item\ItemIceball\`） | 同上 | `:228` **`tn.StartsWith("TowerDefenseItem")` 族前缀** |
+| 烈焰毒物 = 毒雾 | `TowerDefenseItemPoisonMist`（`Item\ItemPoisonMist\`） | 同上（config `hitpoints = 1.0`） | `:228` 族前缀 |
+| 烈焰毒物 = 烈焰 | `TowerDefenseItemMegaFire`（`Item\MegaFire\`） | 同上 | `:350` **专人拦截 `tn0.Contains("MegaFire")`** |
+| （顺带）巨型火球 | `TowerDefenseItemFireball` | 同上 | `:228` 族前缀 |
+
+**为什么"烈焰"必须专人拦（本次复核的核心发现）**：
+`TryCollectObstacleHp` 的入口闸门是 `if (!IsObstacleCharacter(ch) && !IsObstacleLike(ch)) return;`
+—— `&&` 意味着**任一判据为真就放行**；而 `IsObstacleCharacter`（`:159`）含 `|| n.Contains("MegaFire")`
+⇒ `ItemMegaFire` **在进入 `IsObstacleLike` 之前**就通过了，那一整套排除表对它**完全无效**。
+⇒ 只能像 `Crater` 那样在 `TryCollectObstacleHp` 入口单独 `return`。
+
+**四条必须记住的"不能这样做"**：
+1. ❌ 不能按"血量值"判：`Resource\TowerDefense\Character\Config\TowerDefenseCharacterConfig.cs:16` → **`hitpoints = 300.0`（基类默认）**，道具与植物同值；毒雾显式 `1.0` 也照样会显示 `血量 1/1`。
+2. ❌ 不能按 `MoveComponent` 判（我复核掉的一条死代码）：冰球/火球挂的是 **`GroundMoveComponent`**
+   （`Script\Component\TowerDefense\Character\GroundMoveComponent\GroundMoveComponent.cs:4 : CharacterComponentRuntime`），
+   与 `MoveComponent`（`Script\Component\MoveComponent\MoveComponent.cs:5 : ComponentBase`）**无继承关系** ⇒ 判据恒 `null`。
+3. ❌ 不能把判据改成 `GroundMoveComponent` 了事：`Prefab\TowerDefense\Character\ComponentSets\TowerDefenseZombieComponentSet.tres:4`
+   也给**所有僵尸**挂它，只是被 `tn.Contains("Zombie")` 前置拦住 ⇒ 隐式顺序耦合，动顺序就崩。
+4. ❌ 不能笼统删掉 `IsObstacleCharacter` 的 `MegaFire` 分支：`TimeBomb`(3000) / `TimeNuke`(6000) 的 config
+   有**真实 hitpoints**，必须继续显示血量；且烈焰的 **15s `AutoDestroy`「消失」计时必须保留**
+   （`Item\MegaFire\Scene\TowerDefenseItemMegaFireTimerComponentDefinition.tres:8`，走通用通道②，与血量无关）。
+
+**同类核实（受 owner 之托）**：全库类名/文件名含 `MegaFire` 的只有 `TowerDefenseItemMegaFire` 一个角色
+（另一个 `MegaFirePeaSprite` 是 Sprite 类，不是 `TowerDefenseCharacter`）；`CharacterResource.json` 里也只有 `ItemMegaFire` 一个键 ⇒ 该拦截**零误伤**。
+
+### 7.2 「僵尸豌豆小鬼 显示 加速 100%」
+
+**根因**：⑨「等级与加速」通道（`Entry.cs` 的 ⑨ 段）原本对**所有角色**生效，而它读的三类数据都是**植物侧语义**：
+`buff.timeScaleValue`（`:3082-3102` 一带，"任何带该字段的 buff"）/ `FireComponent.timeScale` / `AttackComponent` 与 `FireComponent` 的间隔比
+⇒ 僵尸的 `FireComponent.timeScale`、`fireIntervalBase/fireInterval` 是**配置里的设计值**（僵尸天生射得快/慢），
+拿它当"被加成"呈现就是误导；而且 `timeScaleValue` 还同时被**减速**语义的 buff 使用
+（`TowerDefenseCharacterBuffAttackSpeedDown.timeScaleValue = 0.5`、`BuffComponent.cs:69` 的 `RuneStormSlow` 同族）。
+
+**复核结论（owner 的修法完整、无遗漏、无过杀）**：
+- 守卫 `isZombieBoost = IsZombieCdHost(character, charName)`（`:1818`）；
+- 真正的门只有两个：`:3337`（伤害 ±%）与 `:3359`（加速/攻速/猫窝/加成 buff **整块**）；
+- 我逐一核过**所有** boost 输出行 —— `加速 +`(`:3372`)、`加速 -`(`:3376`)、`攻速 +`(`:3386`)、`猫窝加速 ×2`(`:3406`)、
+  `伤害 ±`(`:3342`/`:3346`)、加成 buff 循环(`:3416` 起) —— **全部落在两个守卫块内**；
+- `isZombieBoost` 全文件只出现 4 次（注释 + 定义 + 2 个守卫）⇒ **不会误伤植物**。
+- 附带影响（已确认可接受）：`IsZombieCdHost` 含 `TowerDefenseSkeleton` ⇒ 骷髅伽刚特尔也一并停止 ⑨。
+
+### 7.3 最终产物指纹（owner 本轮最后一次构建）
+
+| 项 | 值 |
+|---|---|
+| DLL | **115,200 B / md5 `58a7a1bb2f4dad3039697fd2b891da50`** |
+| 编译 | `python mods\HealthCooldownLine\_build_serial.py` → `[compile] RC=0`，0 错误（只编译，未 `--install`；装机由 Lead 统一做） |
+| 我的 19 条静态文案 + `吸金 ` + 4 个符号 | 全部命中（字节级搜索；`吸金 3.0s`=1、`吸金 `=2、`CollectAlmanacStaticCdA`/`AStaticIs`/`TryCollectMagnetCoinLine`/`CollectZombieCdABatchLines` 各 1） |
+| `ZombieCdA.cs` | mtime 2026-11-08 **10:16:36**，自该时刻起**未再改动**（本轮 3 次 md5 变化均非我代码：`b93eb68…`→`58a7a1b…` 是 owner 改的烈焰拦截/`减速`/删重复方法） |

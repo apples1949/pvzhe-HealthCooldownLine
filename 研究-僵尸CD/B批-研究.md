@@ -411,3 +411,172 @@ DLL 特征串核对（`Encoding.Unicode` = 字面量在 #US 堆里是 UTF-16；�
 - A/B 批**互不影响**：`CollectZombieCdLinesA` 抛异常不影响 B（契约 §1.5）；若 A 批某僵尸显示异常，先确认不是我这边。
 - 关闭「显示僵尸冷却」总开关后，**B 批 10 个分支的行全部消失**（外层 `_showZombieCd` 门控）。
 
+---
+
+# v1.2 / 1.27.0：图鉴静态 CD（B 批 18 个）
+
+## 20. 图鉴静态 CD 总表
+
+### 20.0 为什么图鉴必须走"静态值"（两条通道都不跑计时）
+
+| 图鉴位置 | 有没有战斗实体 | 计时会不会跑 | 结论 |
+|---|---|---|---|
+| 格子/列表 `AlmanacZombieWidow` | **没有**：`Almanac.cs#BindZombiePreview()` 只 `AlmanacZombieWidow.Init()` → `CreateSprite()`(AdobeAnimateSprite) + `FreezePreviewTree()`，无 `TowerDefenseCharacter`、无 Component | 不跑 | 只能读**配置静态值** |
+| 详情面板 `InformationPanel` | **有实例**：`InformationPanel.cs:150` `currentCharcter = node as TowerDefenseCharacter`；`:159` `inGame = false`；`:165` `SetMainStateMachineDispatchEnabled(false)` | 状态机被关 ⇒ `BatchUpdate`/`PhysicsProcessing` 不推进 ⇒ **timer 不跑** | 同样只能读**配置静态值** |
+
+补充事实（解释用户"图鉴里完全看不到 CD"）：
+详情面板原本就有一行"冷却时间"，但它读的是 **packet 级** `packetCooldown`：
+`InformationPanel.cs:236` `$"冷却时间:{characterConfig.packetCooldown:F1}"`，而
+**僵尸 config 基本不覆盖这个字段**（例：`Chapter10\Siren\Config\TowerDefenseZombieSiren.tres` 只有 `name`，没有 `packetCooldown`）
+⇒ 落到基类默认值 `Resource\TowerDefense\Character\Config\TowerDefenseCharacterConfig.cs:83` `public double packetCooldown = 5.0;`
+⇒ **僵尸在图鉴里恒显示"冷却时间:5.0"这种无意义值**，技能 CD（歌唱/施法/篡改…）本来一个都没显示。
+本节的静态表就是补这些**技能 CD**；它和 `packetCooldown`（出怪间隔语义）**不是一回事**。
+
+### 20.1 契约口径（v1.2，cdmod-owner）
+
+- 签名：`partial void CollectAlmanacStaticCdB(string charName, string saveKey, List<(string Text, Color Color, double Total)> lines)`（无 `character` / 无 `cm`）
+- 写入：**只用 `AddLine`**（`Total = 0` ⇒ 不参与「只显示 ≥5 秒」过滤）+ **一律 `ReadyColor`**；文案带秒数（`施法 12.0s`）
+- **最多 3 行**，按重要性从高到低；分支内**不判开关**（`showAlmanacCd` + 总开关在外层）
+- **写有效值不写定义值**（代码 `Run(key, 实际值)` 覆盖过 .tres 的按实际值写）
+- 我把这套口径封成 `ZbBStaticAdd(...)`（内部封 3 行上限 + `ReadyColor`），身份判据 `ZbBStaticIs(charName, saveKey, keys...)`
+
+### 20.2 逐僵尸三列（静态 CD 值 / 战斗内口径 / 图鉴能否复用）
+
+| # | 中文名 | charName（saveKey） | **静态 CD 值**（配置来源 · 文件:行号） | **战斗内口径** | **图鉴复用** |
+|---|---|---|---|---|---|
+| 1 | 云小鬼僵尸 | `ZombieImpCloud` | `投掷 8.0s` — 常量 `SHOOT_INTERVAL = 8f`（`…\Chapter8\ImpCloud\Scene\TowerDefenseZombieImpCloud.cs:8`） | `投掷 8.0−_shootTimer`（v1.1 分支，青蓝） | ✅ 静态 |
+| 2 | 黑客小鬼僵尸 | `ZombieImphacker` | `篡改 10.0s` — `_hackTimer.Start(10.0)`（`…\Challenge\Imphacker\…\TowerDefenseZombieImphacker.cs:94`）<br>`隐身 4.0s` — `_hackEffectRemaining = 4.0`（同文件 `:174`） | `冷却`(篡改剩, `Timer.TimeLeft`) + `隐身`(剩) | ✅ 静态（2 行；**战斗内仍用「冷却」**，语义=下一次篡改还要多久） |
+| 3 | 骷髅伽刚特尔 | `ZombieSkeletuar` / `Skeleton` | `复活 30.0s` — 骨堆 `packetCooldown = 30.0`（`…\GraveStone\Skeleton\Config\TowerDefenseSkeleton.tres:16`）+ `time = 30.0`（`…\TowerDefenseSkeleton.cs:14`） | `复活 30−timer`（骨堆实体，v1.1 已放行） | ✅ 静态（两个键都收：图鉴页键是 `ZombieSkeletuar`，计时挂在 `Skeleton`） |
+| 4 | 基因炸弹僵尸 | `ZombieJackGene` | `爆破 9.0~20.0s` — **随机区间** `time = GD.RandRange(9.0, 20.0)`（`…\Chapter9\JackGene\…\TowerDefenseZombieJackGene.cs:85`） | `爆破 time−timer`（total=time，动态） | ✅ 静态（写**区间**，不写死单值） |
+| 5 | 电磁拖车僵尸 | `ZombieMagnetron` | `磁力 10.0s` — `AttackInterval = 10.0`（`…\Chapter9\Magnetron\…\TowerDefenseZombieMagnetron.cs:44`） | `磁力 10−attackTimer`（锚定且未射击时） | ✅ 静态 |
+| 6 | 安眠术士僵尸 | `ZombieSleepMage` | `吟唱 5.0s` — `EntryCastDelay = 5.0`（`:9`）且吟唱段 `chantTimer >= 5.0`（`:259`）<br>`睡眠 10.0s` — `SleepDuration = 10.0`（`:11`）/ `sleepTimer < 10.0`（`:384`） | `吟唱`(前摇或吟唱, 5−x) → `睡眠`(10−x)，互斥 | ✅ 静态（前摇与吟唱同长 5s ⇒ 合并成一条） |
+| 7 | 时间术士僵尸 | `ZombieTimeMage` | `施法 10.0s` — `if (spellTimer >= 10.0)`（`…\Chapter10\TimeMage\…\TowerDefenseZombieTimeMage.cs:163`），发射归零（`:209`） | `冷却 10−spellTimer` | ✅ 静态（战斗内仍用「冷却」，静态用「施法」更贴切） |
+| 8 | 守卫伽刚特尔 | `ZombieGargantuarGD` | `蓄力 5.0s` — `ChargeDuration = 5.0`（`…\Chapter10\GargantuarGD\…:21`）/ `:165` 判 5.0 | `蓄力 5−_chargeElapsed`（仅 `_charging`） | ✅ 静态 |
+| 9 | 塞壬僵尸 | `ZombieSiren` | `施法 12.0s` + `歌唱 5.0s` + `治疗 1.0s` — `timerDictionary = {Cast:12.0, Heal:1.0, Sing:5.0}`（`…\Chapter10\Siren\Scene\TowerDefenseZombieSirenTimerComponentDefinition.tres:8-10`）；类内常量交叉印证 `SingInterval = 12.0`(`:10`)/`SingDuration = 5.0`(`:12`) | 通用通道②显示 `施法`/`歌唱`（v1.1 已中文化） | ✅ 静态（**3 行**，按 owner 要求 治疗 放最后） |
+| 10 | 守护术士僵尸 | `ZombieGuardMage` | `施法 10.0s` — `timerDictionary = {Cast:10.0}`（`…\GuardMage\Scene\…TimerComponentDefinition.tres:8`） | 通用通道② `施法` | ✅ 静态 |
+| 11 | 占卜术士僵尸 | `ZombieDivineMage` | `施法 12.0s` — `timerDictionary = {Cast:12.0}`（`…\DivineMage\Scene\…TimerComponentDefinition.tres:8`） | 通用通道② `施法` | ✅ 静态 |
+| 12 | 唤魔使僵尸 | `ZombieEvoker` | `施法 5.0s` — **有效值**：定义写 10.0（`…\Evoker\Scene\…TimerComponentDefinition.tres:8`），但代码每次 `Run("Cast", 5.0)` 覆盖（`TowerDefenseZombieEvoker.cs:215/:270`，常量 `CastInterval = 5.0` `:10`） | 通用通道② `施法`（读 live 值=5.0） | ✅ 静态（写 5.0，**不写 10.0**） |
+| 13 | 女巫僵尸 | `ZombieWitch` | `投掷 10.0s` — `timerDictionary = {Throw:10.0}`（`…\Witch\Scene\…TimerComponentDefinition.tres:8`） | 通用通道② `投掷` | ✅ 静态 |
+| 14 | 快闪迪斯科僵尸 | `ZombieDiscoFlash` | `起身 10.0s` — `fellDuration = 10.0`（`Script\Component\…\FlashStepComponent\FlashStepComponentDefinition.cs:11`，ComponentSet 内联实例未覆盖） | `起身 _fellRemaining`（滑倒中） | ✅ 静态 |
+| 15 | 快闪舞者僵尸 | `ZombieBackupFlash` | `起身 10.0s` — 同上（同一组件） | `起身 _fellRemaining` | ✅ 静态 |
+| **16** | **飞行器僵尸**（🆕扩展） | `ZombieAircraft` | `推进 15.0s` — **有效值**：定义写 `Spawn: 25.0`（`…\Challenge\Aircraft\Scene\…TimerComponentDefinition.tres:8`），代码每轮 `Run("Spawn", 15.0)`（`TowerDefenseZombieAircraft.cs:132/:144`） | 通用通道② `生成`（`Spawn` 键，CatOn(3)）——**战内是"生成 Ns"，不叫推进** | ✅ 静态（写 15.0；**不再写"生成 25.0s"**，避免自相矛盾） |
+| **17** | **传送门僵尸**（🆕扩展） | `ZombiePortal` | `闭合 20.0s` — `public double time = 20.0`（`…\Challenge\Portal\Scene\TowerDefenseZombiePortal.cs:33`），`:111-120` 满 20s → `over=true; ToPortal()` | ⚠️ **战斗内可显示但本轮未写分支**（字段 `timer`/`time` 齐全，加 8 行分支即可） | ✅ 静态 |
+| **18** | **魔化僵尸怪人**（🆕扩展） | `ZombieMagicYeti` | `狂暴 30.0s` — `RageTriggerTime = 30.0`（`…\Chapter10\MagicYeti\…\TowerDefenseZombieMagicYeti.cs:25`），`:186` 判 `_aliveTime >= 30` 或血量 ≤1000（`:27` `RageTriggerHitpoints = 1000.0`） | ⚠️ **战斗内可显示但本轮未写分支**（`_aliveTime` private，加分支即可） | ✅ 静态 |
+
+### 20.3 三类清单汇总（B 批 18 个）
+
+**A. 图鉴静态可显示：18 / 18**（全部有配置级间隔值；上面 20.2 表逐条给了 `文件:行号`）
+
+**B. 战斗内可显示：18 / 18**（v1.27.0 定稿：Lead 2026-11-08 批准补传送门/魔化后达成）
+- 我写的运行时分支（**12**）：云小鬼、黑客小鬼(2 行)、骷髅伽刚特尔(骨堆)、基因炸弹、电磁拖车、安眠术士、时间术士、守卫伽刚特尔、快闪迪斯科、快闪舞者、**传送门（本轮新增）**、**魔化僵尸怪人（本轮新增）**
+- 通用通道②已覆盖（6）：塞壬、守护术士、占卜术士、唤魔使、女巫（`character.timer` 命名计时器）+ **飞行器**（`Spawn` 键 → 战内显示为「生成」）
+
+**C. 配置里确实没有计时：0 个** —— B 批 18 个都能给出至少一个配置/常量级间隔值。
+（"没有计时"的反例在别的批，例如"闪身步/滑倒概率/瞬发召唤"这类**能力**本身没有时长，但它们所属僵尸另有 CD，故不构成"整只僵尸无计时"。）
+
+### 20.5 ★ 落点修正（Lead 2026-11-08 实查，影响"显示在哪"而非"写什么"）
+
+图鉴有**两个**东西，本轮只做**第二个**：
+
+| 图鉴位置 | 有无实体 | 本轮是否叠加静态 CD | 备注 |
+|---|---|---|---|
+| 格子/列表 `AlmanacZombieWidow`（`Almanac.cs#BindZombiePreview`） | 无（只有 `AdobeAnimateSprite` + `FreezePreviewTree`） | ❌ **本轮不做**（Lead 判定成本高） | 该处只能读配置静态值，能力上可行但暂无 UI 落点 |
+| **详情面板 `InformationPanel`** | **有实例**：`InformationPanel.cs:150`、`:159 inGame=false`、`:165 SetMainStateMachineDispatchEnabled(false)` | ✅ **本轮的落点**：owner 在面板底部叠一行小字 | 状态机被关 ⇒ 计时器永不推进 ⇒ 读"剩余"全是假值，**必须**用静态表 |
+
+- **签名不变**：仍是 `CollectAlmanacStaticCdB(string charName, string saveKey, lines)` ⇒ **我的代码无需改动**。
+- **前缀由 owner 统一加**：`AlmanacCdPrefix = "满CD："`（`HealthCooldownLineEntry.cs:639`）⇒ **我的行不带前缀**（只写 `施法 12.0s`），所以不会出现"满CD：满CD："。
+- **行数上限**：owner `AlmanacMaxRows = 3`（`:636`）+ 我的 `ZbBStaticAdd` 内部也封 3 行（双保险）。
+
+### 20.6 ★ 「冷却时间: 5.0」—— 用户"图鉴看不到 CD"的直接观感来源（证据保留）
+
+详情面板自带一行「冷却时间」，读的是 **packet 级** `packetCooldown`，不是任何僵尸的技能 CD：
+
+| 证据 | 内容 |
+|---|---|
+| `unpack\Prefab\GUI\InformationPanel\InformationPanel.cs:236` | `informationColdDownLabel.Text = $"[color=ab5e57]冷却时间:{characterConfig.packetCooldown:F1}[/color]";` |
+| `unpack\Resource\TowerDefense\Character\Config\TowerDefenseCharacterConfig.cs:83` | `public double packetCooldown = 5.0;`（**基类默认值**） |
+| 例：`…\Chapter10\Siren\Config\TowerDefenseZombieSiren.tres` | 只有 `name = "ZombieSiren"`，**没有** `packetCooldown` ⇒ 落到默认 5.0 |
+| 对照组：`…\GraveStone\Skeleton\Config\TowerDefenseSkeleton.tres:16` | 墓碑类**覆盖**了 `packetCooldown = 30.0`（所以骨堆会显示 30.0） |
+
+⇒ **绝大多数僵尸在图鉴里恒显示「冷却时间: 5.0」**（无意义），技能 CD 一个都没有 —— 这是玩家"以为没有 CD / 看到 5.0 不知道是什么"的直接原因。
+我的静态行是**另加的技能 CD**（`满CD：歌唱 5.0s · 施法 12.0s …`），与 `packetCooldown` 的"出怪间隔"语义**不是一回事**。
+
+### 20.4 静态表**不写**的东西（避免和机制混淆）
+
+| 僵尸 | 不写的内容 | 原因（证据） |
+|---|---|---|
+| 快闪迪斯科 / 快闪舞者 | 闪身步、滑倒概率 5%→100% | 瞬发事件 `TryFlash()`（`FlashStepComponent.cs:398-425`）+ 百分比，不是时间 CD |
+| 快闪迪斯科 | 召唤 4 只舞者 | 动画事件 `spawn` 驱动（`TowerDefenseZombieDiscoFlash.cs:545-556`），无间隔计时 |
+| 魔化僵尸怪人 | 锁链 10s（`ChainDuration`） | 是对**它自己**的减益（被魔法伤害触发），由玩家侧造成，不是它的 CD |
+| 占卜术士 | 预言 10s（`_prophecyRemaining`） | 作用于**玩家卡槽**的卡面效果，不是僵尸 CD |
+| 唤魔使 | 魔魂数量 0~3 | 计数状态，不是时间 CD |
+| 飞行器 | `Spawn 25.0`（定义值） | 运行期被 15.0 覆盖，写 25.0 会自相矛盾（owner 明确要求） |
+
+## 21. 本轮扩展的 3 个僵尸（原 31 个清单之外）
+
+> Lead 2026-11-08 用户点名新增。三者**类名与配置均已实读确认存在**（不是猜的），下表给"存在性 + CD 来源"。
+
+### 21.1 飞行器僵尸 `ZombieAircraft`
+
+- **存在性**：类 `unpack\Asset\Anime\Character\Zombie\Challenge\Aircraft\Scene\TowerDefenseZombieAircraft.cs:6`
+  `public partial class TowerDefenseZombieAircraft : TowerDefenseZombie`；配置 `Challenge\Aircraft\Config\TowerDefenseZombieAircraft.tres:12` `name = "ZombieAircraft"`；
+  ComponentSet `…\Aircraft\Scene\TowerDefenseZombieAircraftComponentSet.tres`（挂了 1 个 `CharacterTimerComponent`）
+- **图鉴机制**：每隔 **15 秒**启动螺旋桨向前推进 1 格；被击落/飞到最后一列降落改走（同气球僵尸）。
+- **静态 CD 来源（有效值 15.0）**：`TowerDefenseZombieAircraft.cs:132` `_timerComponent.Run("Spawn", 15.0)`、`:144` 超时后再次 `Run("Spawn", 15.0)`；
+  **定义文件写的是 25.0**：`…TimerComponentDefinition.tres:8` `"Spawn": 25.0`（只作为初始 waitTime 的兜底，被 Run 覆盖）
+- **战斗内口径**：`Spawn` 键由**通用通道②**显示为「生成 X.Xs」（`CatOn(3)`=「生成计时」），语义是"下一次推进还有多久"，不是"召唤生成"。
+- **图鉴**：`推进 15.0s`（静态）；**不写**"生成 25.0s"。
+
+### 21.2 传送门僵尸 `ZombiePortal`
+
+- **存在性**：类 `…\Challenge\Portal\Scene\TowerDefenseZombiePortal.cs`（`public partial class TowerDefenseZombiePortal`）；配置 `Challenge\Portal\Config\TowerDefenseZombiePortal.tres:11` `name = "ZombiePortal"`；
+  ComponentSet 里**只有** `CharacterAabbAreaComponent`（`…\TowerDefenseZombiePortalAreaComponentDefinition.tres`，`InstanceId = "character.aabb_area.0"`），**没有 TimerComponent**
+- **图鉴机制**：出场时传送门开启（吞掉一切正面平射实体子弹）；**登场 20 秒后关闭**；关闭/被消除/本体死亡时把吞下的子弹从随机一扇传送门吐出。
+- **静态 CD 来源**：`TowerDefenseZombiePortal.cs:31` `public double timer;` `:33` `public double time = 20.0;`
+  `:109-121` `if (!over && CanRunAbility()) { if (timer < time) timer += delta * timeScale; else { over = true; ToPortal(); } }`
+- **战斗内**：字段齐全 ⇒ **可显示**（`闭合 20−timer`），但**本轮未写运行时分支**（不在 31 清单）。
+- **图鉴**：`闭合 20.0s`（静态）。
+
+### 21.3 魔化僵尸怪人 `ZombieMagicYeti`
+
+- **存在性**：类 `…\Chapter10\MagicYeti\Scene\TowerDefenseZombieMagicYeti.cs`；配置 `Chapter10\MagicYeti\Config\TowerDefenseZombieMagicYeti.tres:13` `name = "ZombieMagicYeti"`（`hitpoints = 1930.0`）
+- **图鉴机制**：入场 **30 秒** / 血量首次 <1000 时进入狂暴（上限提到 4000 并回满、免疫减速不免疫冻结、体型变大、改砸击、速度大幅提升）。
+- **静态 CD 来源**：`:25` `private const double RageTriggerTime = 30.0;` `:27` `RageTriggerHitpoints = 1000.0;`
+  `:63` `private double _aliveTime;` `:177` `_aliveTime += Math.Max(0.0, delta) * timeScale;`
+  `:186` `if (CanRunAbility() && !_rageEntered && !_rageRequested && (!(_aliveTime < 30.0) || !(instance.hitpoints > 1000.0))) _rageRequested = SendStateEvent("ToRage");`
+- **战斗内**：`_aliveTime` 是 private ⇒ 反射可读，**可显示**（`狂暴 30−_aliveTime`，且血量≤1000 会提前触发 ⇒ total 传 30.0 但可能提前消失），**本轮未写分支**。
+- **图鉴**：`狂暴 30.0s`（静态）。注意它还有**第二条触发路径**（血量 <1000），静态行只反映"最晚 30 秒"。
+
+### 21.4 三个扩展项的"战斗内分支"结论（**已定**）
+
+| 僵尸 | 数据可得性 | 结论 |
+|---|---|---|
+| 飞行器 | `Spawn` 键已被通用通道②显示「生成」 | ✅ 保持现状（不重复写行） |
+| 传送门 | `timer`/`time`/`over` 均 **public** | ✅ **已实现运行时分支**（Lead 2026-11-08 批准）：`闭合 (time−timer)s`，`over` 后隐藏，`total = time`（默认 20.0） |
+| 魔化僵尸怪人 | `_aliveTime` **private** ⇒ 反射；`_rageEntered`/`_rageRequested` | ✅ **已实现运行时分支**：`狂暴 (30−_aliveTime)s`；⚠️ 血量 ≤1000 会**提前触发** ⇒ 该行提前消失属正常 |
+
+---
+
+## 22. v1.27.0 交付自检（定稿）
+
+```
+python mods\HealthCooldownLine\_build_serial.py   →  [compile] RC=0 / [compile] OK（0 错误 0 警告）
+产物 bin\Release\JTYHealthCooldownLine.dll：114,688 B / 2026-11-08 10:17:37 / md5 b93eb686eea77aad7ea4a60618ac8ebb
+时间戳合规：ZombieCdB.cs 10:11:49 < ZombieCdA.cs 10:16:36 < Entry.cs 10:16:05 < DLL 10:17:37（DLL 最新，四检不报"源码比 DLL 新"）
+```
+
+DLL 特征串核对（**UTF-16LE 字节搜**，不整块解码；共 59 项全命中）：
+
+| 组 | 数量 | 明细 |
+|---|---|---|
+| 中文标签词 | 17 | 投掷 / 篡改 / 隐身 / 复活 / 爆破 / 磁力 / 吟唱 / 睡眠 / 施法 / 蓄力 / 歌唱 / 治疗 / 起身 / 推进 / 闭合 / 狂暴 / 冷却 |
+| 完整静态行文案 | 19 | `投掷 8.0s`、`篡改 10.0s`、`隐身 4.0s`、`复活 30.0s`、`爆破 9.0~20.0s`、`磁力 10.0s`、`吟唱 5.0s`、`睡眠 10.0s`、`施法 10.0s`、`蓄力 5.0s`、`施法 12.0s`、`歌唱 5.0s`、`治疗 1.0s`、`施法 5.0s`、`投掷 10.0s`、`起身 10.0s`、`推进 15.0s`、`闭合 20.0s`、`狂暴 30.0s` |
+| 身份键（charName/saveKey） | 19 | 18 个 config 名 + `Skeleton` |
+| 符号 | 4 | `CollectAlmanacStaticCdB` / `CollectZombieCdLinesB` / `ZbBStaticIs` / `ZbBStaticAdd` |
+
+> 说明：`施法 10.0s` 同时被时间术士与守护术士使用，`起身 10.0s` 被快闪两个僵尸共用，`施法 5.0s`/`施法 12.0s` 同理 ——
+> 所以 **19 条文案 < 21 条 `AddLine` 调用**（塞壬 3 条、黑客小鬼/安眠术士 各 2 条，其余各 1 条 = 21）。
+
+
+
+

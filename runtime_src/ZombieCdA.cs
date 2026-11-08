@@ -47,7 +47,7 @@ public sealed partial class HealthCooldownLineEntry
 			// ================== ★★★ 示范段结束 ★★★ ==========================
 
 			// ↓↓↓ zombie-dev-a：A 批其余 12 个僵尸（研究见 研究-僵尸CD\A批-研究.md）↓↓↓
-			CollectZombieCdABatchLines(character, charName, lines);
+			CollectZombieCdABatchLines(cm, character, charName, lines);
 		}
 		catch
 		{
@@ -224,7 +224,8 @@ public sealed partial class HealthCooldownLineEntry
 	//    · 鲨鱼僵尸 —— 唯一计时是 ChomperComponent 的 chewTimer/chewTime(=15.0)，
 	//      已被 TryCollectInfo 的 ②.5「咀嚼」通道显示（Entry.cs:1877-1915）⇒ 同上。
 	// ========================================================================
-	private void CollectZombieCdABatchLines(TowerDefenseCharacter character, string charName,
+	private void CollectZombieCdABatchLines(ComponentManager cm, TowerDefenseCharacter character,
+		string charName,
 		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
 	{
 		if (lines.Count >= MaxTotalLines) { return; }
@@ -363,6 +364,23 @@ public sealed partial class HealthCooldownLineEntry
 			return;
 		}
 
+		// ── 吸金磁僵尸 ZombieNormalGoldMagnet（v1.27.0 由 Lead 点名核查后补入）──────
+		//   证据：类 `TowerDefenseZombieNormalGoldMagnet`（`Chapter1\Normal\Scene\GoldMagnet\`），
+		//         组件集 `TowerDefenseZombieNormalGoldMagnetComponentSet.tres` 只挂
+		//         `MagnetCoinComponent`（InstanceId = `character.magnet_coin`），**没有** CharacterTimerComponent。
+		//         该定义里覆盖了 `magnetTime = 3.0`（默认 5f）、`pullSpeed = 8.0`。
+		//         组件源码 `Script\Component\TowerDefense\Character\MagnetCoinComponent\MagnetCoinComponent.cs`：
+		//           `:10 public float timer`（已过）/ `:32 public float magnetTime { get; set; } = 5f`（总时长）
+		//           `:191 timer = Mathf.Min(Mathf.Max(0f, magnetTime), timer + delta*…)`（累加到满）
+		//           `:241 if (… || timer < Math.Max(0f, magnetTime)) return;`（未满则等待）
+		//           `:262 timer = 0f`（吸完归零 ⇒ 周期循环）
+		//   ⇒ 这是**真·周期 CD**（不是"出场 CD"）：每 3 秒吸一次金币。战斗内可显示 `吸金 2.4s`。
+		if (AClassIs(character, charName, "ZombieNormalGoldMagnet"))
+		{
+			TryCollectMagnetCoinLine(cm, lines);
+			return;
+		}
+
 		// ── 不可显示 / 不重复写（登记，详见 研究-僵尸CD\A批-研究.md §2.4/§2.5/§2.10/§3）──
 		//  · 三叶草气球僵尸（ZombieBalloonBlover）/ 三叶草多彩气球僵尸（ZombieBalloonColourBlover）
 		//    证据：Balloon\Scene\Blover\TowerDefenseZombieBalloonBlover.cs:120 `_timer.Run("Clover", 8.0)`、
@@ -461,5 +479,162 @@ public sealed partial class HealthCooldownLineEntry
 			AddTimer(lines, label + " " + remain.ToString("0.0") + "s", BusyColor, fixedTotal);
 		}
 		catch { }
+	}
+
+	/// <summary>
+	/// 吸金磁僵尸：`MagnetCoinComponent`（InstanceId = `character.magnet_coin`）。
+	/// `timer` = 已过、`magnetTime` = 总时长（组件集覆盖成 3.0s）、吸完 `:262 timer = 0f` 归零。
+	/// 两个成员都是 **public** ⇒ 直接强类型读，不用反射。
+	/// </summary>
+	private void TryCollectMagnetCoinLine(ComponentManager cm,
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
+	{
+		try
+		{
+			if (lines.Count >= MaxTotalLines) { return; }
+			MagnetCoinComponent mc = FindComponentOfType<MagnetCoinComponent>(cm);
+			if (mc == null) { return; }
+			double total = mc.magnetTime;
+			double elapsed = mc.timer;
+			double remain = total - elapsed;
+			if (!ZombieCdDisplayable(remain, total)) { return; }
+			AddTimer(lines, "吸金 " + remain.ToString("0.0") + "s", BusyColor, total);
+		}
+		catch { }
+	}
+
+	// ========================================================================
+	//  图鉴静态 CD（v1.27.0 新增，契约 v1.2）
+	//
+	//  为什么必须做静态表：图鉴**两个面都没有跑起来的计时** ——
+	//    · 格子 `AlmanacZombieWidow`：只有 AdobeAnimateSprite（`Init()` 只 CreateSprite + FreezePreviewTree），
+	//      连 `TowerDefenseCharacter` 都没有 ⇒ 反射实例字段永远读不到；
+	//    · 详情面板 `InformationPanel`：有真实实例但 `inGame=false` + 主状态机 dispatch 关闭 ⇒ timer 不推进。
+	//  ⇒ 只能显示"满 CD"的**配置值**，且一律 `AddLine`（Total=0，不参与「只显示 ≥5 秒」）。
+	//  门控（总开关 `_enabled` + `showAlmanacCd`）在外层 `Entry.cs`，本段**不判任何开关**。
+	//
+	//  每条都注明"配置来源"，并区分三类（研究见 `研究-僵尸CD\A批-研究.md` §6）：
+	//    [配置] 真·资源里的值：ComponentSet 的 timerDictionary / 组件定义 .tres / 场景 .tscn 的 [Export]
+	//    [代码] DLL 里的 `const` / 字段默认值 / RandRange 字面量（配置里没有，改版会漂）
+	// ========================================================================
+	partial void CollectAlmanacStaticCdA(string charName, string saveKey,
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines)
+	{
+		if (lines == null) { return; }
+		try
+		{
+			// 每个僵尸最多 2 行（格子 75×75，外层还会用 " · " 拼成一行小字）
+			if (lines.Count >= 2) { return; }
+
+			// ── 毁灭菇僵尸：[代码] DoomShroom.cs:63 `time = GD.RandRange(25.0, 30.0)`
+			if (AStaticIs(charName, "ZombieNormalDoomShroom"))
+			{ AddLine(lines, "爆破 25~30s", ReadyColor); return; }
+
+			// ── 火爆辣椒僵尸：[代码] Jalapeno.cs:59 `RandRange(25.0, 30.0)`
+			if (AStaticIs(charName, "ZombieNormalJalapeno"))
+			{ AddLine(lines, "自燃 25~30s", ReadyColor); return; }
+
+			// ── 火炬辣椒僵尸：[代码] Jalatorch.cs:8/:10 `ExplodeDelayMin=7.0` / `Max=10.0`，`:59 RandRange(7,10)`
+			//    ⚠️ 图鉴文案写 25~30 秒，代码是 7~10 秒 ⇒ 以代码为准
+			if (AStaticIs(charName, "ZombieNormalJalatorch"))
+			{ AddLine(lines, "自燃 7~10s", ReadyColor); return; }
+
+			// ── 三叶草气球僵尸：[配置] `TowerDefenseZombieBalloonBloverComponentSet.tres`
+			//    的 sub_resource `TimerDefinition` → `timerDictionary = {"Clover": 8.0}`
+			//    （战斗内同源：Blover.cs:120 `_timer.Run("Clover", 8.0)`，值一致）
+			if (AStaticIs(charName, "ZombieBalloonBlover"))
+			{ AddLine(lines, "吹飞 8.0s", ReadyColor); return; }
+
+			// ── 三叶草多彩气球僵尸：[配置] 同款，`...ColourBloverComponentSet.tres` 的 `{"Clover": 8.0}`
+			//    （战斗内 BalloonColourBlover.cs:137）
+			if (AStaticIs(charName, "ZombieBalloonColourBlover"))
+			{ AddLine(lines, "吹飞 8.0s", ReadyColor); return; }
+
+			// ── 寒冰菇冰车僵尸：[代码] ZamboniIceShroom.cs:87 `RandRange(25.0, 30.0)`（图鉴写 15 秒，以代码为准）
+			if (AStaticIs(charName, "ZombieZamboniIceShroom"))
+			{ AddLine(lines, "自爆 25~30s", ReadyColor); return; }
+
+			// ── 玩偶匣僵尸：[代码] Jackbox.cs:85 `RandRange(9.0, 20.0)`
+			if (AStaticIs(charName, "ZombieJackbox"))
+			{ AddLine(lines, "自爆 9~20s", ReadyColor); return; }
+
+			// ── 海妖僵尸：[代码] SeaDemon.cs:114 `if (timer < 15.0)`
+			if (AStaticIs(charName, "ZombieSeaDemon"))
+			{ AddLine(lines, "召唤 15.0s", ReadyColor); return; }
+
+			// ── 磁场僵尸：[代码] ZombieMagnetic.cs:26 `openTime = GD.RandRange(6.0, 12.0)`
+			if (AStaticIs(charName, "ZombieMagnetic"))
+			{ AddLine(lines, "磁力 6~12s", ReadyColor); return; }
+
+			// ── 鲨鱼僵尸：[配置] `ChomperComponent\Definitions\ZombieSharkDefinition.tres` → `chewTime = 15.0`
+			//    （战斗内同源：ChomperComponent.chewTime，通用通道 ②.5 显示）
+			if (AStaticIs(charName, "ZombieShark"))
+			{ AddLine(lines, "咀嚼 15.0s", ReadyColor); return; }
+
+			// ── 天使僵尸（双段）：[代码] Angel.cs:35 `spawnTimer = 15.0` / `:39 invincibleTimer = 8.0`
+			//    （场景 tscn **没有**覆盖这两个值，所以字段默认值就是生效值）
+			if (AStaticIs(charName, "ZombieAngel"))
+			{
+				AddLine(lines, "复活 15.0s", ReadyColor);
+				AddLine(lines, "无敌 8.0s", ReadyColor);
+				return;
+			}
+
+			// ── 催眠师僵尸：[代码] Hypnotist.cs:181 `if (waitTimer < 10.0)`（落地后停留偷取）
+			if (AStaticIs(charName, "ZombieHypnotist"))
+			{ AddLine(lines, "偷取 10.0s", ReadyColor); return; }
+
+			// ── 农夫僵尸：[配置] 场景 `TowerDefenseZombieFarmer.tscn` → `spawnTime = 10.0`
+			//    （字段默认 Farmer.cs:18 也是 10.0，两处一致）
+			if (AStaticIs(charName, "ZombieFarmer"))
+			{ AddLine(lines, "召唤 10.0s", ReadyColor); return; }
+
+			// ── 海盗船长僵尸：[配置] 场景 `TowerDefenseZombieCaptain.tscn` → `spawnTime = 15.0`（字段 :11 同值）
+			if (AStaticIs(charName, "ZombieCaptain"))
+			{ AddLine(lines, "召唤 15.0s", ReadyColor); return; }
+
+			// ── 重生法师僵尸：[配置] 场景 `TowerDefenseZombieNecromancerG.tscn:19` → `shootingTime = 10.0`（字段 :11 同值）
+			if (AStaticIs(charName, "ZombieNecromancerG"))
+			{ AddLine(lines, "治疗 10.0s", ReadyColor); return; }
+
+			// ── 巨化法师僵尸：[配置] 场景 `TowerDefenseZombieNecromancerB.tscn:17` → `shootingTime = 10.0`（字段 :15 同值）
+			//    ⚠️ 图鉴文案写 12 秒，代码/场景是 10.0 ⇒ 以代码为准
+			if (AStaticIs(charName, "ZombieNecromancerB"))
+			{ AddLine(lines, "变大 10.0s", ReadyColor); return; }
+
+			// ── 吸金磁僵尸：[配置] `TowerDefenseZombieNormalGoldMagnetComponentSet.tres`
+			//    的 `MagnetCoinComponentDefinition` → `magnetTime = 3.0`（默认 5f，被组件集覆盖）
+			if (AStaticIs(charName, "ZombieNormalGoldMagnet"))
+			{ AddLine(lines, "吸金 3.0s", ReadyColor); return; }
+
+			// ── 僵尸坚果伽刚特尔：[配置] `TowerDefenseZombieGargantuarWallnutZTimerComponentDefinition.tres`
+			//    → `timerDictionary = {"Spawn": 10.0}`（该定义被同目录 ComponentSet.tres:5 引用 ⇒ 真挂上了）
+			if (AStaticIs(charName, "ZombieGargantuarWallnutZ"))
+			{ AddLine(lines, "生成 10.0s", ReadyColor); return; }
+
+			// ── 僵尸豌豆小鬼：[配置] `TowerDefenseZombieImpPeashooterZTimerComponentDefinition.tres`
+			//    → `timerDictionary = {"Spawn": 10.0}`（同目录 ComponentSet.tres:4 引用）
+			//    ※ 用户报的"加速 100%"属「等级与加速」通道误命中（见本轮 bug 定性），与本静态值无关
+			if (AStaticIs(charName, "ZombieImpPeashooterZ"))
+			{ AddLine(lines, "生成 10.0s", ReadyColor); return; }
+		}
+		catch { }
+	}
+
+	/// <summary>
+	/// 图鉴静态表的身份判据：**只吃 `charName`**（图鉴没有实例），
+	/// 用 `StartsWith` 覆盖盔甲变体（`ZombieJackboxBlackHelmet` 等）。
+	/// ⚠️ 安全性：本批 19 个键两两之间**没有**互为前缀的关系
+	/// （唯一相近的 `ZombieBalloonBlover` / `ZombieBalloonColourBlover` 在第 9 个字符就分叉），
+	/// 所以 StartsWith 不会互相误命中；`ZombieNecromancerG` / `B` 也是独立串。
+	/// </summary>
+	private static bool AStaticIs(string charName, string classKey)
+	{
+		try
+		{
+			return !string.IsNullOrEmpty(charName) && !string.IsNullOrEmpty(classKey)
+				&& charName.StartsWith(classKey, StringComparison.Ordinal);
+		}
+		catch { return false; }
 	}
 }

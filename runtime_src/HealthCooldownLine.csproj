@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     血量显示新增「角色计时器倒计时」一行 —— 托管运行时程序集。
@@ -28,9 +28,9 @@
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <Version>1.26.0</Version>
-    <AssemblyVersion>1.26.0.0</AssemblyVersion>
-    <FileVersion>1.26.0.0</FileVersion>
+    <Version>1.28.0</Version>
+    <AssemblyVersion>1.28.0.0</AssemblyVersion>
+    <FileVersion>1.28.0.0</FileVersion>
     <!--
       游戏程序集是 net9.0，本工程 target net8.0（本机 SDK 版本）⇒ 引用其传递依赖时
       会报一屏 MSB3277「版本冲突」警告。它们不影响产物，但会让构建日志膨胀、

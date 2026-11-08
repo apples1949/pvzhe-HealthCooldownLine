@@ -206,6 +206,39 @@ public sealed partial class HealthCooldownLineEntry : IXWModRuntimeEntry
 			{
 				return false;
 			}
+			// ★★ v1.27.0（用户："巨型雪球 / 巨型冰球 / 烈焰毒物 也不该显示血量"）：
+			//   真身全在 `unpack\Asset\Anime\Character\Item\` 下，是**召唤物/投射物**，不是障碍物：
+			//     · 巨型雪球 = `TowerDefenseItemSnowBall`（雪球射手滚出的球，v1.23.0 已按名字排除）
+			//     · 巨型冰球 = `TowerDefenseItemIceball`
+			//     · 烈焰毒物 = `TowerDefenseItemPoisonMist`
+			//     · 巨型火球 = `TowerDefenseItemFireball`
+			//   ⇒ **判据一（主判据）：类名族前缀 `TowerDefenseItem`** —— `Item\` 目录下 17 个脚本里
+			//     16 个都是这个前缀（唯一例外 `TowerDefenseReverseRake` 是割草机类，命中
+			//     `TowerDefenseGravestone` 之外的名单，不受影响）。用"族前缀"而不是逐个类名，
+			//     以后新增任何 `Item` 类道具自动被排除，不用再补名单。
+			//   ⇒ 判据二：几个不带 `Item` 前缀的移动特效类名兜底。
+			//   ⚠️ 为什么**不用组件判据**（zombie-dev-a 2026-11-08 复核指出，原写法是死代码）：
+			//     冰球/火球挂的是 **`GroundMoveComponent`**（`Script\Component\TowerDefense\Character\
+			//     GroundMoveComponent\GroundMoveComponent.cs:4`），而 `MoveComponent` 是**另一套旧组件**
+			//     （`Script\Component\MoveComponent\MoveComponent.cs:5`，属于 `ComponentBase` 体系），
+			//     两者**无继承关系** ⇒ `FindComponentOfType<MoveComponent>` 对它们恒为 null。
+			//     也不能改判 `GroundMoveComponent`：**所有僵尸**的组件集都挂了它
+			//     （`Prefab\...\ComponentSets\TowerDefenseZombieComponentSet.tres:4`），只是本方法开头
+			//     `tn.Contains("Zombie")` 先拦住了 —— 那是隐式顺序耦合，改动极易炸。
+			if (tn.StartsWith("TowerDefenseItem", StringComparison.Ordinal))
+			{
+				if (_obstacleHpReported.Add("ITEM|" + tn))
+				{
+					Info("血量跳过[" + tn + "]：Item 系召唤物/投射物，不是障碍物");
+				}
+				return false;
+			}
+			if (tn.Contains("Iceball") || tn.Contains("IceBall") || tn.Contains("Fireball")
+				|| tn.Contains("PoisonMist") || tn.Contains("SurfWave") || tn.Contains("Spikeball")
+				|| tn.Contains("Brain"))
+			{
+				return false;
+			}
 			ComponentManager cmL = ch.componentManager;
 			if (cmL == null)
 			{
@@ -297,6 +330,29 @@ public sealed partial class HealthCooldownLineEntry : IXWModRuntimeEntry
 			string tn0 = character.GetType().Name;
 			if (tn0.Contains("Crater"))
 			{
+				return;
+			}
+			// ★★ v1.27.0（zombie-dev-a 2026-11-08 复核指出，含 Lead 要求的"核实同类"）：
+			//   **烈焰 `TowerDefenseItemMegaFire` 必须在这里单独拦**——
+			//   它命中 `IsObstacleCharacter()` 的 `Contains("MegaFire")` 分支 ⇒ 该闸门是
+			//   `!IsObstacleCharacter && !IsObstacleLike`（任一为真就放行）⇒ 它会**绕过
+			//   `IsObstacleLike` 里的整个排除表**，仍去显示"血量"。
+			//   图鉴定性：烈焰 = 物品（召唤物），韧性 `---`（无血量），**不收血**；
+			//   但它的 **15 秒 AutoDestroy「消失」计时必须保留**（走通用通道 ②，
+			//   `Item\MegaFire\Scene\TowerDefenseItemMegaFireTimerComponentDefinition.tres:8`
+			//   `"AutoDestroy": 15.0`，`TimerLabel` 已映射为「消失」）——所以只拦"血量"，
+			//   不动那条计时通道。
+			//   ⚠️ **不能**笼统改 `IsObstacleCharacter` 的 `MegaFire` 分支：`TimeBomb`(3000) /
+			//   `TimeNuke`(6000) 的 config 有**真实 hitpoints**，必须继续显示血量。
+			//   同类核实：`Item\` 下带 `Mega` 前缀的只有 `ItemMegaFire` 一个
+			//   （`Asset\Anime\Character\Item\MegaFire\Scene\TowerDefenseItemMegaFire.cs`），
+			//   其余 Item 系已由 `IsObstacleLike` 的 `TowerDefenseItem` 族前缀拦下。
+			if (tn0.Contains("MegaFire"))
+			{
+				if (_obstacleHpReported.Add("MEGAFIRE|" + tn0))
+				{
+					Info("血量跳过[" + tn0 + "]：烈焰是召唤物/物品（图鉴韧性 ---），不是有血量的障碍物");
+				}
 				return;
 			}
 			if (!IsObstacleCharacter(character) && !IsObstacleLike(character))
@@ -584,6 +640,25 @@ public sealed partial class HealthCooldownLineEntry : IXWModRuntimeEntry
 	/// </summary>
 	private bool _showZombieCd = true;
 
+	// ★ v1.28.0：**僵尸是否显示"加成"行**（默认关）。
+	//   背景：v1.27.0 按修 bug 的方向把僵尸的「加速/攻速/伤害/加成 buff」**一刀切不显示**——
+	//   因为僵尸的 `FireComponent.timeScale` / `AttackComponent.attackInterval` 是**配置里的设计射速**
+	//   （僵尸天生打得更快），当"被加成"呈现会误导（用户报"僵尸豌豆小鬼 加速 100%"）。
+	//   用户现要求**可配置**：默认关 = 保持 v1.27.0 行为（僵尸不显示加成，这是正常状态）；
+	//   开 = 允许僵尸显示它自己的加速/攻速/伤害/加成行（想看极端玩法/测试时用）。
+	//   ⚠️ 图鉴静态行与此无关（静态表里没有加成项）。
+	/// <summary>允许僵尸显示「加速/攻速/伤害/加成」行（默认 **false** = 不显示）。</summary>
+	private bool _showZombieBoost;
+
+	/// <summary>「僵尸显示加成」的宿主配置键名（与 mod.json 逐字一致）。</summary>
+	private const string HostKeyZombieBoost = "showZombieBoost";
+
+	/// <summary>「僵尸显示加成」在 user:// cfg 里的兜底键名。</summary>
+	private const string ZombieBoostCfgKey = "feature_zombieboost";
+
+	/// <summary>「僵尸显示加成」勾选框节点名。</summary>
+	private const string ZombieBoostCheckBoxName = "ModZombieBoostCheckBox";
+
 	/// <summary>「显示僵尸冷却」在**宿主配置**（mod.json settings）里的键名 —— 必须逐字一致，否则 TrySave 整批拒绝。</summary>
 	private const string HostKeyZombieCd = "showZombieCd";
 
@@ -592,6 +667,51 @@ public sealed partial class HealthCooldownLineEntry : IXWModRuntimeEntry
 
 	/// <summary>「显示僵尸冷却」勾选框的节点名（幂等判断 / 状态校准用）。</summary>
 	private const string ZombieCdCheckBoxName = "ModZombieCdCheckBox";
+
+	// ============================================================ v1.27.0「图鉴显示冷却」
+	//
+	// 用户报「图鉴里看不到 CD」。实读源码后的根因（证据见 报告-图鉴CD.md）：
+	//   · 图鉴**格子**（`AlmanacZombieWidow`）只 CreateSprite + FreezePreviewTree，**没有任何实体**；
+	//   · 图鉴**详情面板**（`InformationPanel.InitPacket`）**会实例化真角色**，但：
+	//       `currentCharcter.inGame = false`（InformationPanel.cs:159）、
+	//       `SetMainStateMachineDispatchEnabled(false)`（:165）⇒ 战斗循环不跑 ⇒ 所有计时器**永不推进**，
+	//       停在初始值 ⇒ 我们原来的"运行时剩余"分支算不出剩余 ⇒ 一片空白；
+	//   · 而且面板自带那行「冷却时间」读的是 packet 级 `characterConfig.packetCooldown`
+	//       （默认 5.0，僵尸基本不覆盖）⇒ **恒显示一个无意义的 5.0**。
+	// ⇒ 正确做法：图鉴/详情面板改用**静态 CD**（读配置里的"满 CD 总时长"），措辞写成"满 CD 10.0s"，
+	//   与战斗内的运行时倒计时**分成两条通道**，互不污染。
+	//
+	/// <summary>
+	/// 「图鉴显示冷却」—— 图鉴 / 详情面板里叠加**静态满 CD**（默认开）。
+	///
+	/// 与既有开关的关系：
+	///   · 总开关 `_enabled` = false ⇒ 图鉴叠加也不显示（最高优先级）；
+	///   · 本开关只管**图鉴/详情面板**这一个面，与「显示僵尸冷却」(`_showZombieCd`)**相互独立**
+	///     （战斗里关掉僵尸 CD、图鉴里仍可查满 CD；反之亦然）；
+	///   · 静态值不参与「只显示 ≥5 秒」（它没有"剩余"概念，用 `AddLine` 写入 ⇒ Total=0）。
+	/// </summary>
+	private bool _showAlmanacCd = true;
+
+	/// <summary>「图鉴显示冷却」的宿主配置键名（与 mod.json 逐字一致）。</summary>
+	private const string HostKeyAlmanacCd = "showAlmanacCd";
+
+	/// <summary>「图鉴显示冷却」在 user:// cfg 里的兜底键名。</summary>
+	private const string AlmanacCdCfgKey = "feature_almanaccd";
+
+	/// <summary>「图鉴显示冷却」勾选框节点名。</summary>
+	private const string AlmanacCdCheckBoxName = "ModAlmanacCdCheckBox";
+
+	/// <summary>图鉴详情面板上我们叠加的那行静态 CD 的节点名。</summary>
+	private const string AlmanacCdLabelName = "ModAlmanacCdLabel";
+
+	/// <summary>图鉴扫描节流（帧）。图鉴是暂停态 UI，30 帧足够。</summary>
+	private const int AlmanacScanStride = 30;
+
+	/// <summary>图鉴静态 CD 每行最多显示几条（多段僵尸如塞壬 3 段）。</summary>
+	private const int AlmanacMaxRows = 3;
+
+	/// <summary>图鉴静态 CD 叠加行的前缀（明确告诉玩家这是"满 CD"而不是当前剩余）。</summary>
+	private const string AlmanacCdPrefix = "满CD：";
 
 	/// <summary>
 	/// 「只显示 ≥5 秒」的阈值（秒）。
@@ -1078,6 +1198,10 @@ public sealed partial class HealthCooldownLineEntry : IXWModRuntimeEntry
 		r = TryReadSwitch(context, HostKeyOnlyLong);    if (r.HasValue) { _onlyLongTimers = r.Value; any = true; }
 		// ★ v1.26.0「显示僵尸冷却」（独立开关，不属于 9 类）
 		r = TryReadSwitch(context, HostKeyZombieCd);    if (r.HasValue) { _showZombieCd = r.Value; any = true; }
+		// ★ v1.28.0「僵尸显示加成」（默认关）
+		r = TryReadSwitch(context, HostKeyZombieBoost); if (r.HasValue) { _showZombieBoost = r.Value; any = true; }
+		// ★ v1.27.0「图鉴显示冷却」（独立开关，只管图鉴/详情面板）
+		r = TryReadSwitch(context, HostKeyAlmanacCd);   if (r.HasValue) { _showAlmanacCd = r.Value; any = true; }
 		return any;
 	}
 
@@ -1215,6 +1339,20 @@ public void Initialize(XWModRuntimeContext context)
 		}
 		catch { }
 
+		// ★ v1.27.0：图鉴/详情面板的**静态 CD 叠加行**（30 帧一次；图鉴是暂停态 UI，够用）。
+		//   必须放在下面那条 `_frame % ScanStride` 早退**之前**，否则会被战斗扫描节流吃掉。
+		try
+		{
+			Engine.GetProcessFrames();
+			ulong _af = Engine.GetProcessFrames();
+			if (_af - _almanacEnsureFrame >= (ulong)AlmanacScanStride)
+			{
+				_almanacEnsureFrame = _af;
+				TickAlmanacCd();
+			}
+		}
+		catch { }
+
 		try { MaintainCdPanelPause(); } catch { }   // ★ 面板暂停每帧维持（设一次会被别处改回）
 		try { SponsorQrInjector.Tick(Engine.GetMainLoop() as SceneTree, "血条·装填倒计时", SponsorQrRoot, "Resources/SponsorQR.png"); } catch { }
 		try
@@ -1320,6 +1458,20 @@ public void Initialize(XWModRuntimeContext context)
 		{
 			// 总开关关闭：收起全部自建行，不再读组件
 			if (!_enabled)
+			{
+				HideAllLines(character);
+				return;
+			}
+
+			// ★★ v1.27.0：**图鉴/详情面板里的预览角色**（`InformationPanel.InitPacket` 实例化，
+			//   `inGame = false`、`SetMainStateMachineDispatchEnabled(false)`）——
+			//   它不跑战斗循环 ⇒ 所有 `timer/timerRemaining` 永不推进、停在初始值
+			//   ⇒ 我们"剩余 = 总 − 已过"算出来的是**假倒计时**（例如毁灭菇恒显示 25~30s 不动）。
+			//   所以预览角色一律收起运行时行，图鉴改走**静态 CD 通道**（见 TickAlmanacCd）。
+			//   ⚠️ 战斗内角色 `inGame == true`，不受影响。
+			bool previewOnly = false;
+			try { previewOnly = !character.inGame; } catch { }
+			if (previewOnly)
 			{
 				HideAllLines(character);
 				return;
@@ -1709,6 +1861,13 @@ public void Initialize(XWModRuntimeContext context)
 		{
 			return;
 		}
+
+		// ★★ v1.27.0（用户："僵尸豌豆小鬼 显示了 加速 100%"）：**僵尸一律不显示"加速/攻速/伤害/加成"**。
+		//   原因：这套显示是给**植物被加成**用的（buff 的 timeScaleValue、猫窝攻速翻倍等）；
+		//   僵尸的 `FireComponent.timeScale` / `AttackComponent.attackInterval` 是**配置里的设计值**
+		//   （僵尸天生射得更快，如 2.0 = 比标称快一倍），拿它当"被加成"呈现就是误导。
+		//   ⑨ 段的全部显示条件都加了本判据（`!isZombieBoost`），数据采集保留（诊断日志仍可用）。
+		bool isZombieBoost = IsZombieCdHost(character, charName);
 
 		// ⓪ 核弹磁力菇（TowerDefensePlantMagnetShroomDM）：收集铁器 → 核能充能 → 可发射。
 		//   角色类字段（mdprobe 实读）：ironCount（已收集，属性 backing field）/
@@ -3227,7 +3386,7 @@ public void Initialize(XWModRuntimeContext context)
 								Info("伤害变化[" + bk3 + "]：基线=" + dmBase.ToString("0.###")
 									+ " → 当前=" + dm.ToString("0.###"));
 							}
-							if (CatOn(8) && lines.Count < MaxTotalLines)
+							if ((!isZombieBoost || _showZombieBoost) && CatOn(8) && lines.Count < MaxTotalLines)
 							{
 								double rr = (dmBase > 0.0001) ? (dm / dmBase) : 1.0;
 								if (rr > 1.0001)
@@ -3249,7 +3408,7 @@ public void Initialize(XWModRuntimeContext context)
 			}
 			catch { }
 
-			if (CatOn(8) && lines.Count < MaxTotalLines)
+			if ((!isZombieBoost || _showZombieBoost) && CatOn(8) && lines.Count < MaxTotalLines)
 			{
 				// ★ v1.10.4：以"种下时的实测值"为基线，只显示**真实变化**——
 				//   游戏里不少植物天生 base≠cur（如间隔 1.5 vs 3），拿标称值当基准会产生
@@ -3266,7 +3425,13 @@ public void Initialize(XWModRuntimeContext context)
 				}
 				else if (spd < 0.9999)
 				{
-					AddLine(lines, "加速 -" + ((1.0 - spd) * 100.0).ToString("0") + "%", DisabledColor);
+					// ★ v1.27.0（zombie-dev-a 2026-11-08 指出的"植物侧反向显示风险"）：
+					//   `timeScaleValue` 同时被**减速**语义的 buff 使用
+					//   （如 `TowerDefenseCharacterBuffAttackSpeedDown.timeScaleValue = 0.5`、
+					//   `BuffComponent.cs:69` 的 `RuneStormSlow` 同族）⇒ spd < 1 是**减速**，
+					//   以前写成「加速 -50%」语义是反的（玩家会以为"反向加速"）。
+					//   现改为「减速 50%」，方向与颜色（灰=负面）都对得上。
+					AddLine(lines, "减速 " + ((1.0 - spd) * 100.0).ToString("0") + "%", DisabledColor);
 				}
 				// (1.2) 攻速：**标称间隔 / 当前间隔**（>1 = 比标称更快，即被加成）——
 				//   猫窝"使种在猫窝内的猫尾草类植物攻速翻倍"的落点就在这里
@@ -3451,7 +3616,21 @@ public void Initialize(XWModRuntimeContext context)
 		//   这里是它们进入显示管线的唯一入口（受「显示僵尸冷却」开关门控，
 		//   非僵尸角色 / 开关关闭 / 行数已满 时直接返回，零开销）。
 		TryCollectZombieCdLines(cm, character, charName, lines);
+
+		// ★★ v1.27.0：**植物侧附加行**（PlantCdExtra.cs / shovel）—— 全文件唯一调用点。
+		//   外层只判总开关；分类开关由实现方自己判（见契约 v1.2 §11）。
+		try
+		{
+			if (_enabled && !IsZombieCdHost(character, charName) && lines.Count < MaxTotalLines)
+			{
+				CollectPlantExtraLines(cm, character, charName, lines);
+			}
+		}
+		catch (Exception ex) { WarnOnceZombie(ref _plantExtraFaultReported, "植物附加", ex); }
 	}
+
+	private bool _plantExtraFaultReported;
+
 
 	// ================================================================ v1.26.0 僵尸专属附加行扩展点
 	//
@@ -3475,6 +3654,44 @@ public void Initialize(XWModRuntimeContext context)
 	/// 语义与 A 完全相同，只是拆文件避免冲突。
 	/// </summary>
 	partial void CollectZombieCdLinesB(ComponentManager cm, TowerDefenseCharacter character,
+		string charName, System.Collections.Generic.List<(string Text, Color Color, double Total)> lines);
+
+	// ================================================================ v1.27.0 图鉴静态 CD 扩展点
+	//
+	// ── 为什么另开一对 partial（而不是复用上面两个）────────────────────────
+	//   图鉴（格子/详情面板预览）里**没有可用的运行时状态**：详情面板虽然会实例化真角色，
+	//   但 `inGame=false` + 状态机 dispatch 关闭 ⇒ 计时器永不推进，读"剩余"只会得到 0/初始值。
+	//   ⇒ 图鉴只能显示**配置里的"满 CD 总时长"**，数据源是各僵尸类的常量/`[Export]` 默认值/
+	//     `*TimerComponentDefinition.tres` 的 `timerDictionary`，与运行时实例无关。
+	//   ⇒ 入参只有身份字符串（`charName` = `characterConfig.name`，`saveKey` = packet 键），
+	//     没有 `ComponentManager`、没有 `TowerDefenseCharacter`。
+	//
+	/// <summary>
+	/// 图鉴静态 CD 的 **A 批实现点**（ZombieCdA.cs）。只能拿到身份字符串，写 `AddLine` 即可
+	/// （`Total=0` ⇒ 不参与「只显示 ≥5 秒」）。**不要判开关**（外层已判）。最多 3 行。
+	/// </summary>
+	partial void CollectAlmanacStaticCdA(string charName, string saveKey,
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines);
+
+	/// <summary>图鉴静态 CD 的 **B 批实现点**（ZombieCdB.cs），语义同 A。</summary>
+	partial void CollectAlmanacStaticCdB(string charName, string saveKey,
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines);
+
+	/// <summary>
+	/// 图鉴静态 CD 的 **植物侧实现点**（PlantCdExtra.cs，shovel 维护）。
+	/// `charName` = `characterConfig.name`（如 `PlantDoomSunFlower`）。
+	/// </summary>
+	partial void CollectAlmanacStaticCdPlant(string charName, string saveKey,
+		System.Collections.Generic.List<(string Text, Color Color, double Total)> lines);
+
+	// ================================================================ v1.27.0 植物侧扩展点
+	//
+	/// <summary>
+	/// **战斗内**植物附加行实现点（PlantCdExtra.cs，shovel 维护）。
+	/// 与僵尸通道并列，在 `TryCollectInfo` 末尾被调用一次；外层只判总开关，
+	/// **分类开关由实现方自己判**（不同植物归不同类，见 00-框架与契约.md v1.2 §11）。
+	/// </summary>
+	partial void CollectPlantExtraLines(ComponentManager cm, TowerDefenseCharacter character,
 		string charName, System.Collections.Generic.List<(string Text, Color Color, double Total)> lines);
 
 	/// <summary>
@@ -3657,8 +3874,164 @@ public void Initialize(XWModRuntimeContext context)
 		return remaining > 0.0 && total > 0.0;
 	}
 
-	// ---------------------------------------------------------------- 设置页开关
+	// ================================================================ v1.27.0 图鉴静态 CD 通道
+	//
+	// 设计要点（证据见 报告-图鉴CD.md）：
+	//   · 图鉴**格子**（`AlmanacZombieWidow`）根本没有实体 ⇒ 只能静态值；
+	//   · 图鉴**详情面板**（`InformationPanel`）会实例化真角色，但 `inGame=false` +
+	//     状态机 dispatch 关闭 ⇒ 计时器永不推进 ⇒ 运行时"剩余"没有意义；
+	//   · ⇒ 图鉴一律走**静态通道**：`currentPacketConfig` → `characterConfig.name` → 静态表，
+	//     文案前缀「满CD：」明确区分"满 CD 总时长"与战斗内"剩余"；
+	//   · 战斗内运行时通道完全不受影响（两条通道开关也相互独立）。
 
+	private bool _almanacFaultReported;
+	private ulong _almanacEnsureFrame;
+
+	/// <summary>
+	/// 扫描整棵树里的 `InformationPanel`（图鉴的 `%ZombieInformationPanel` / `%PlantInformationPanel`
+	/// 都是它），把静态 CD 叠加行安排上。没有面板时什么都不做。
+	/// </summary>
+	private void TickAlmanacCd()
+	{
+		try
+		{
+			if (_tree == null || !GodotObject.IsInstanceValid(_tree)) { return; }
+			Node root = _tree.Root;
+			if (root == null || !GodotObject.IsInstanceValid(root)) { return; }
+			int panels = 0;
+			WalkAlmanacPanels(root, ref panels);
+		}
+		catch (Exception ex)
+		{
+			if (!_almanacFaultReported)
+			{
+				_almanacFaultReported = true;
+				Warn("图鉴静态CD异常（本条只报一次）：" + ex.Message);
+			}
+		}
+	}
+
+	private void WalkAlmanacPanels(Node node, ref int panels)
+	{
+		if (node == null || !GodotObject.IsInstanceValid(node)) { return; }
+		try
+		{
+			if (node is InformationPanel panel)
+			{
+				panels++;
+				RefreshAlmanacPanelLabel(panel);
+			}
+		}
+		catch { }
+		Godot.Collections.Array<Node> kids = node.GetChildren();
+		for (int i = 0; i < kids.Count; i++)
+		{
+			WalkAlmanacPanels(kids[i], ref panels);
+		}
+	}
+
+	/// <summary>把一个 `InformationPanel` 上的静态 CD 叠加行刷新（无内容则隐藏）。</summary>
+	private void RefreshAlmanacPanelLabel(InformationPanel panel)
+	{
+		try
+		{
+			if (panel == null || !GodotObject.IsInstanceValid(panel)) { return; }
+			Label lbl = panel.GetNodeOrNull<Label>(AlmanacCdLabelName);
+
+			if (!_enabled || !_showAlmanacCd)
+			{
+				if (lbl != null && GodotObject.IsInstanceValid(lbl)) { lbl.Visible = false; }
+				return;
+			}
+
+			string text = BuildAlmanacCdText(panel);
+			if (string.IsNullOrEmpty(text))
+			{
+				if (lbl != null && GodotObject.IsInstanceValid(lbl)) { lbl.Visible = false; }
+				return;
+			}
+
+			if (lbl == null || !GodotObject.IsInstanceValid(lbl))
+			{
+				lbl = new Label();
+				lbl.Name = AlmanacCdLabelName;
+				lbl.ZIndex = 300;
+				lbl.MouseFilter = Control.MouseFilterEnum.Ignore;
+				lbl.HorizontalAlignment = HorizontalAlignment.Center;
+				lbl.VerticalAlignment = VerticalAlignment.Center;
+				lbl.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+				lbl.AddThemeFontSizeOverride("font_size", 13);
+				lbl.AddThemeConstantOverride("outline_size", 6);
+				lbl.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f, 1f));
+				lbl.AddThemeColorOverride("font_color", new Color(0.35f, 1f, 0.42f, 1f));
+				panel.AddChild(lbl);
+				// 贴在面板底部按钮区上方（面板底部是标签页按钮，避开它们）
+				lbl.SetAnchorsPreset(Control.LayoutPreset.BottomWide);
+				lbl.OffsetLeft = 12f;
+				lbl.OffsetRight = -12f;
+				lbl.OffsetTop = -78f;
+				lbl.OffsetBottom = -44f;
+			}
+			lbl.Text = AlmanacCdPrefix + text;
+			lbl.Visible = true;
+		}
+		catch { }
+	}
+
+	/// <summary>
+	/// 由详情面板当前的 packet 反查静态 CD 文本（多行用 ` · ` 连接）。
+	/// 僵尸 → A/B 批静态表；其它（植物/障碍物）→ 植物侧静态表。
+	/// </summary>
+	private string BuildAlmanacCdText(InformationPanel panel)
+	{
+		try
+		{
+			TowerDefensePacketConfig cfg = panel.currentPacketConfig;
+			if (cfg == null || !GodotObject.IsInstanceValid(cfg)) { return null; }
+			TowerDefenseCharacterConfig cc = cfg.characterConfig;
+			if (cc == null || !GodotObject.IsInstanceValid(cc)) { return null; }
+			string charName = cc.name;
+			if (string.IsNullOrEmpty(charName)) { return null; }
+			string saveKey = null;
+			try { saveKey = cfg.saveKey; } catch { }
+
+			var lines = new System.Collections.Generic.List<(string Text, Color Color, double Total)>();
+			bool isZombie = false;
+			try { isZombie = (cc is TowerDefenseZombieConfig); } catch { }
+			if (isZombie)
+			{
+				try { CollectAlmanacStaticCdA(charName, saveKey, lines); }
+				catch (Exception ex) { WarnOnceZombie(ref _zbStaticAFault, "图鉴静态A", ex); }
+				try { CollectAlmanacStaticCdB(charName, saveKey, lines); }
+				catch (Exception ex) { WarnOnceZombie(ref _zbStaticBFault, "图鉴静态B", ex); }
+			}
+			else
+			{
+				try { CollectAlmanacStaticCdPlant(charName, saveKey, lines); }
+				catch (Exception ex) { WarnOnceZombie(ref _plantStaticFault, "图鉴静态植物", ex); }
+			}
+			if (lines.Count == 0) { return null; }
+
+			var sb = new System.Text.StringBuilder();
+			int used = 0;
+			for (int i = 0; i < lines.Count && used < AlmanacMaxRows; i++)
+			{
+				string t = lines[i].Text;
+				if (string.IsNullOrEmpty(t)) { continue; }
+				if (sb.Length > 0) { sb.Append("  ·  "); }
+				sb.Append(t);
+				used++;
+			}
+			return (sb.Length > 0) ? sb.ToString() : null;
+		}
+		catch { return null; }
+	}
+
+	private bool _zbStaticAFault;
+	private bool _zbStaticBFault;
+	private bool _plantStaticFault;
+
+	// ---------------------------------------------------------------- 设置页开关
 	/// <summary>
 	/// 在 BattleOption 对话框里注入「显示冷却倒计时」开关（幂等）——**两列布局**：
 	///   CenterContainer
@@ -3721,6 +4094,20 @@ public void Initialize(XWModRuntimeContext context)
 				&& existZbCb.ButtonPressed != _showZombieCd)
 			{
 				existZbCb.SetPressedNoSignal(_showZombieCd);
+			}
+			// ★ v1.27.0：「图鉴显示冷却」独立开关（同样单独校准）
+			CheckBox existAlCb = cols.FindChild(AlmanacCdCheckBoxName, true, false) as CheckBox;
+			if (existAlCb != null && GodotObject.IsInstanceValid(existAlCb)
+				&& existAlCb.ButtonPressed != _showAlmanacCd)
+			{
+				existAlCb.SetPressedNoSignal(_showAlmanacCd);
+			}
+			// ★ v1.28.0：「僵尸显示加成」独立开关（同样单独校准）
+			CheckBox existZbBoostCb = cols.FindChild(ZombieBoostCheckBoxName, true, false) as CheckBox;
+			if (existZbBoostCb != null && GodotObject.IsInstanceValid(existZbBoostCb)
+				&& existZbBoostCb.ButtonPressed != _showZombieBoost)
+			{
+				existZbBoostCb.SetPressedNoSignal(_showZombieBoost);
 			}
 			return;
 		}
@@ -3825,8 +4212,15 @@ public void Initialize(XWModRuntimeContext context)
 			}
 		}
 
-		// ★ v1.26.0：「显示僵尸冷却」—— 独立开关（不在 9 类里），放在第 3 列（署名行之前）
-		AppendZombieCdControls(col3);
+		// ★★ v1.28.0（用户要求）：「显示僵尸冷却」移到**第 3 个位置**（紧跟「只显示 ≥5 秒」），
+		//   与 mod.json.settings 的顺序 1 enabled / 2 only_long_timers / **3 showZombieCd** 对齐；
+		//   「僵尸显示加成」紧跟其后（第 4 个），两者成对好找。
+		//   ⇒ 第 2 列前 4 行 = 总开关 / 只显示≥5秒（+小字）/ 显示僵尸冷却（+小字）/ 僵尸显示加成（+小字）
+		AppendZombieCdControls(col2);
+		AppendZombieBoostControls(col2);
+
+		// ★ v1.27.0：「图鉴显示冷却」—— 只管图鉴/详情面板的静态叠加（留在第 3 列，署名行之前）
+		AppendAlmanacCdControls(col3);
 
 		// ★ v1.15.4：署名/防冒用行放在**第三列的最后一行**（用户要求；原在第 1 列游戏列表下方）
 		Label sign = new Label();
@@ -4066,6 +4460,10 @@ public void Initialize(XWModRuntimeContext context)
 			longCb.Connect("toggled", Callable.From(new Action<bool>(OnOnlyLongChanged)));
 			c2.AddChild(longCb);
 
+			// ★★ v1.28.0：与主建路径同序 —— 第 3 个位置「显示僵尸冷却」+ 第 4 个「僵尸显示加成」
+			AppendZombieCdControls(c2);
+			AppendZombieBoostControls(c2);
+
 			string[] ftext = { "装填与核能", "障碍物消失", "障碍物血量", "生成计时", "角色计时器其他CD", "成长与充能", "产出倒计时", "战斗辅助", "等级与加速" };
 			int[] order = { 0, 1, 2, 7, 8, 5, 6, 3, 4 };
 			for (int k = 0; k < order.Length; k++)
@@ -4074,9 +4472,9 @@ public void Initialize(XWModRuntimeContext context)
 				CheckBox fcb = MakeFeatureCheckBox("ModFeatureCb" + idx, ftext[idx], GetFeatureValue(idx), idx);
 				((k < 5) ? c2 : (c3 != null && GodotObject.IsInstanceValid(c3) ? c3 : c2)).AddChild(fcb);
 			}
-			// ★ v1.26.0：「显示僵尸冷却」—— 守候补全路径也要补上，否则会出现"有 9 类没有僵尸开关"
-			AppendZombieCdControls((c3 != null && GodotObject.IsInstanceValid(c3)) ? c3 : c2);
-			Info("CD 面板内容已补齐（总开关 + 只显示≥5秒 + 9 类开关 + 显示僵尸冷却）。");
+			// ★ v1.27.0：「图鉴显示冷却」（留在第 3 列）
+			AppendAlmanacCdControls((c3 != null && GodotObject.IsInstanceValid(c3)) ? c3 : c2);
+			Info("CD 面板内容已补齐（总开关 + 只显示≥5秒 + 显示僵尸冷却 + 僵尸显示加成 + 9 类开关 + 图鉴显示冷却）。");
 		}
 		catch (Exception ex) { Warn("填 CD 面板内容异常（已吞）：" + ex.Message); }
 	}
@@ -4428,6 +4826,146 @@ public void Initialize(XWModRuntimeContext context)
 		}
 	}
 
+	// ---------------------------------------------------------------- v1.28.0 僵尸加成开关（UI）
+
+	/// <summary>造「僵尸显示加成」勾选框（v1.28.0，默认**不勾**）。</summary>
+	private CheckBox MakeZombieBoostCheckBox()
+	{
+		CheckBox cb = new CheckBox();
+		cb.Name = ZombieBoostCheckBoxName;
+		cb.Text = "僵尸显示加成";
+		cb.Alignment = HorizontalAlignment.Center;
+		cb.MouseDefaultCursorShape = Control.CursorShape.PointingHand;
+		cb.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+		cb.AddThemeConstantOverride("outline_size", 5);
+		cb.AddThemeFontSizeOverride("font_size", 14);
+		cb.ButtonPressed = _showZombieBoost;
+		cb.Connect("toggled", Callable.From(new Action<bool>(OnZombieBoostChanged)));
+		return cb;
+	}
+
+	/// <summary>「僵尸显示加成」下面的说明小字（把"默认关是正常状态"讲清楚）。</summary>
+	private Label MakeZombieBoostSubLabel()
+	{
+		Label sub = new Label();
+		sub.Name = ZombieBoostCheckBoxName + "Sub";
+		sub.Text = "— 默认关：僵尸的加速/攻速来自配置设计，不是加成 —";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		sub.MouseFilter = Control.MouseFilterEnum.Ignore;
+		sub.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+		sub.AddThemeConstantOverride("outline_size", 4);
+		sub.AddThemeFontSizeOverride("font_size", 11);
+		sub.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f, 1f));
+		sub.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		sub.CustomMinimumSize = new Vector2(230f, 0f);
+		return sub;
+	}
+
+	/// <summary>把「僵尸显示加成」勾选框 + 说明追加到目标列（两个建面板路径都调，幂等）。</summary>
+	private void AppendZombieBoostControls(VBoxContainer target)
+	{
+		try
+		{
+			if (target == null || !GodotObject.IsInstanceValid(target)) { return; }
+			if (target.FindChild(ZombieBoostCheckBoxName, false, false) != null) { return; }
+			target.AddChild(MakeZombieBoostCheckBox());
+			try { target.AddChild(MakeZombieBoostSubLabel()); } catch { }
+		}
+		catch (Exception ex)
+		{
+			Warn("追加「僵尸显示加成」控件异常（已吞）：" + ex.Message);
+		}
+	}
+
+	/// <summary>
+	/// 「僵尸显示加成」切换：三处同步 + 立即生效（下一帧扫描即按新值出/收行）。
+	/// 默认 **false**：僵尸不显示「加速/攻速/伤害/加成」——这是 v1.27.0 起修正误显示后的**正常状态**。
+	/// </summary>
+	private void OnZombieBoostChanged(bool on)
+	{
+		try
+		{
+			_showZombieBoost = on;
+			PersistSwitch(HostKeyZombieBoost, on);
+			Info("开关[僵尸显示加成] → " + (on ? "开（僵尸会显示加速/攻速/伤害/加成行）" : "关（正常状态：僵尸不显示加成）")
+				+ "；已落盘 " + HostKeyZombieBoost + "=" + (on ? "true" : "false")
+				+ "（cfg 键 " + ZombieBoostCfgKey + " 同步写入）");
+		}
+		catch (Exception ex)
+		{
+			Warn("「僵尸显示加成」切换异常（已吞）：" + ex.Message);
+		}
+	}
+
+	// ---------------------------------------------------------------- v1.27.0 图鉴开关（UI）
+
+	/// <summary>造「图鉴显示冷却」勾选框（v1.27.0）。样式与其它开关一致。</summary>
+	private CheckBox MakeAlmanacCdCheckBox()
+	{
+		CheckBox cb = new CheckBox();
+		cb.Name = AlmanacCdCheckBoxName;
+		cb.Text = "图鉴显示冷却";
+		cb.Alignment = HorizontalAlignment.Center;
+		cb.MouseDefaultCursorShape = Control.CursorShape.PointingHand;
+		cb.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+		cb.AddThemeConstantOverride("outline_size", 5);
+		cb.AddThemeFontSizeOverride("font_size", 14);
+		cb.ButtonPressed = _showAlmanacCd;
+		cb.Connect("toggled", Callable.From(new Action<bool>(OnAlmanacCdChanged)));
+		return cb;
+	}
+
+	/// <summary>「图鉴显示冷却」下面的说明小字。</summary>
+	private Label MakeAlmanacCdSubLabel()
+	{
+		Label sub = new Label();
+		sub.Name = AlmanacCdCheckBoxName + "Sub";
+		sub.Text = "— 图鉴/详情面板显示「满CD」静态值，不是战斗中剩余 —";
+		sub.HorizontalAlignment = HorizontalAlignment.Center;
+		sub.MouseFilter = Control.MouseFilterEnum.Ignore;
+		sub.AddThemeColorOverride("font_outline_color", new Color(0, 0, 0, 1));
+		sub.AddThemeConstantOverride("outline_size", 4);
+		sub.AddThemeFontSizeOverride("font_size", 11);
+		sub.AddThemeColorOverride("font_color", new Color(0.85f, 0.85f, 0.85f, 1f));
+		sub.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		sub.CustomMinimumSize = new Vector2(230f, 0f);
+		return sub;
+	}
+
+	/// <summary>把「图鉴显示冷却」勾选框 + 说明追加到指定列（两个建面板路径都调，幂等）。</summary>
+	private void AppendAlmanacCdControls(VBoxContainer target)
+	{
+		try
+		{
+			if (target == null || !GodotObject.IsInstanceValid(target)) { return; }
+			if (target.FindChild(AlmanacCdCheckBoxName, false, false) != null) { return; }
+			target.AddChild(MakeAlmanacCdCheckBox());
+			try { target.AddChild(MakeAlmanacCdSubLabel()); } catch { }
+		}
+		catch (Exception ex)
+		{
+			Warn("追加「图鉴显示冷却」控件异常（已吞）：" + ex.Message);
+		}
+	}
+
+	/// <summary>「图鉴显示冷却」切换：三处同步 + 立即刷新图鉴叠加行。</summary>
+	private void OnAlmanacCdChanged(bool on)
+	{
+		try
+		{
+			_showAlmanacCd = on;
+			PersistSwitch(HostKeyAlmanacCd, on);
+			Info("开关[图鉴显示冷却] → " + (on ? "开" : "关")
+				+ "；已落盘 " + HostKeyAlmanacCd + "=" + (on ? "true" : "false")
+				+ "（cfg 键 " + AlmanacCdCfgKey + " 同步写入）");
+			TickAlmanacCd();   // 立即生效，不等下一次 30 帧节流
+		}
+		catch (Exception ex)
+		{
+			Warn("「图鉴显示冷却」切换异常（已吞）：" + ex.Message);
+		}
+	}
+
 	/// <summary>
 	/// 「显示僵尸冷却」切换：**内存 → 宿主配置 → user:// cfg** 三处同步（与 9 类开关同一套路，
 	/// 见 <see cref="PersistSwitch"/>），并打一条开关日志（受 enableLog 控制）。
@@ -4657,6 +5195,12 @@ public void Initialize(XWModRuntimeContext context)
 				// ★ v1.26.0「显示僵尸冷却」（缺键默认开）
 				object zv = cf.GetValue("mod", ZombieCdCfgKey, true);
 				_showZombieCd = (zv is bool zb) ? zb : true;
+				// ★ v1.28.0「僵尸显示加成」（缺键默认**关**）
+				object bv2 = cf.GetValue("mod", ZombieBoostCfgKey, false);
+				_showZombieBoost = (bv2 is bool bb2) ? bb2 : false;
+				// ★ v1.27.0「图鉴显示冷却」（缺键默认开）
+				object av = cf.GetValue("mod", AlmanacCdCfgKey, true);
+				_showAlmanacCd = (av is bool ab) ? ab : true;
 			}
 		}
 		catch (Exception ex)
@@ -4689,6 +5233,10 @@ public void Initialize(XWModRuntimeContext context)
 			}
 			// ★ v1.26.0「显示僵尸冷却」
 			cf.SetValue("mod", ZombieCdCfgKey, _showZombieCd);
+			// ★ v1.28.0「僵尸显示加成」
+			cf.SetValue("mod", ZombieBoostCfgKey, _showZombieBoost);
+			// ★ v1.27.0「图鉴显示冷却」
+			cf.SetValue("mod", AlmanacCdCfgKey, _showAlmanacCd);
 			cf.Save(ConfigPath);
 		}
 		catch (Exception ex)

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """最终组装自检（cdmod-owner）—— 在产物 DLL 里核对**全部**特征串。
 
 ⚠️ 查法要点（zombie-dev-a 反馈的真实坑）：
@@ -31,6 +31,12 @@ SYMBOLS = [
     "OnZombieCdChanged", "MakeZombieCdCheckBox", "AppendZombieCdControls",
     # 骨堆门控（v1.26.1 放宽）
     "TowerDefenseSkeleton", "TowerDefenseGravestone",
+    # v1.27.0 图鉴静态 CD 通道
+    "TickAlmanacCd", "WalkAlmanacPanels", "RefreshAlmanacPanelLabel", "BuildAlmanacCdText",
+    "CollectAlmanacStaticCdA", "CollectAlmanacStaticCdB",
+    "showAlmanacCd", "feature_almanaccd",
+    "ModAlmanacCdCheckBox", "ModAlmanacCdLabel", "AppendAlmanacCdControls", "MakeAlmanacCdCheckBox",
+    "InformationPanel", "TowerDefenseItem", "TowerDefenseZombieConfig", "AppendHypnoPatchPendingLine",
 ]
 
 # ── 2) A 批实现（zombie-dev-a）──────────────────────────────────────────────
